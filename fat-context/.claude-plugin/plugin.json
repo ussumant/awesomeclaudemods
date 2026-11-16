@@ -1,0 +1,6 @@
+{
+  "name": "fat-context",
+  "version": "0.1.0",
+  "description": "The session puts on weight as its context fills: fatter message borders, a growing creature above the prompt, heavier spinner verbs. It slims back down after /compact or /clear.",
+  "types": "./types/index.d.ts"
+}

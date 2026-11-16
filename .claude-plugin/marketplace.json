@@ -1,0 +1,11 @@
+{
+  "name": "awesomeclaudemods",
+  "owner": { "name": "ussumant" },
+  "plugins": [
+    {
+      "name": "fat-context",
+      "source": "./fat-context",
+      "description": "The session gets visibly fat as the context window fills up."
+    }
+  ]
+}
