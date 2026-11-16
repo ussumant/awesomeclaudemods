@@ -102,180 +102,40 @@ const cells = (text: string) => [...text].reduce((n, ch) => n + (ch >= '！' && 
 
 const WORD = /^[A-Za-z0-9]+[,.!?;:]?$/
 
-// "Am I inside code" follows CommonMark, the markdown the engine draws, and fails
-// closed: wherever it can't be sure text is prose, it leaves the text alone.
-
-type Fence = { mark: '`' | '~'; length: number; isContained: boolean }
-
-/** Strips container prefixes: blockquote markers and list markers, repeated for nesting. */
-const stripContainers = (line: string) => {
-  let rest = line
-  for (;;) {
-    const prefix = /^ {0,3}(?:>[ \t]?|(?:[-*+]|\d{1,9}[.)])[ \t]+)/.exec(rest)?.[0] ?? ''
-    if (prefix === '') return rest
-    rest = rest.slice(prefix.length)
-  }
-}
-
-/** A fence opener: 3 or more of one character, indented at most 3 spaces (inside any containers); a backtick opener's info string holds no backtick. */
-const fenceOpens = (line: string): Fence | null => {
-  const inner = stripContainers(line)
-  const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(inner)
-  const run = m?.[1] ?? ''
-  if (run === '') return null
-  const mark = run.startsWith('~') ? '~' : '`'
-  if (mark === '`' && (m?.[2] ?? '').includes('`')) return null
-
-  return { mark, length: run.length, isContained: inner !== line }
-}
+/**
+ * Anything that may be code, a table or markup: a backtick, a tilde fence, a tab, four
+ * spaces in a row, a pipe, or a less-than. A message holding any of them is left whole.
+ */
+const GUARD = /[`\t|<]|~~~| {4}/
 
 /**
- * A fence closes only on the same character, a run at least as long, and nothing after but
- * spaces or tabs: indented at most 3 spaces for a fence at the top level, at any indent and
- * behind any container prefix for one opened inside a container.
+ * A message with its plain words drawn double width: the one way in for both message hooks.
+ * When unsure, it changes nothing: a message the guard trips is returned as written. Otherwise
+ * only whole words of letters and digits (one trailing , . ! ? ; : allowed) widen; a line
+ * starting with `/` and a list number opening a line stay as written.
  */
-const fenceCloses = (line: string, fence: Fence) => {
-  const body = fence.isContained ? stripContainers(line).trimStart() : line
-  const run = (fence.isContained ? /^(`{3,}|~{3,})[ \t]*$/ : /^ {0,3}(`{3,}|~{3,})[ \t]*$/).exec(body)?.[1] ?? ''
+export const fatten = (text: string) => {
+  if (GUARD.test(text)) return text
 
-  return run !== '' && run.startsWith(fence.mark) && run.length >= fence.length
-}
+  return text
+    .split('\n')
+    .map(line => {
+      if (line.trimStart().startsWith('/')) return line // a slash command
+      let isFirst = true
 
-/**
- * Where a paragraph's code spans lie, [start, end), and whether any backtick run matched no
- * closer. A run of N backticks opens a span only if a later run of exactly N closes it.
- * Outside a span a backslash-escaped backtick is a literal; inside one, backslashes do nothing.
- */
-const codeSpans = (text: string): { spans: [number, number][]; hasUnmatched: boolean } => {
-  const runs = [...text.matchAll(/`+/g)].map(m => {
-    const at = m.index ?? 0
-    const slashes = /\\*$/.exec(text.slice(0, at))?.[0].length ?? 0
-
-    return { at, n: m[0].length, isEscaped: slashes % 2 === 1 }
-  })
-  const spans: [number, number][] = []
-  let hasUnmatched = false
-
-  for (let i = 0; i < runs.length; i++) {
-    const run = runs[i]
-    if (run === undefined) break
-    // An escaped first backtick is a literal; the rest of the run may still open a span.
-    const open = run.isEscaped ? { at: run.at + 1, n: run.n - 1 } : { at: run.at, n: run.n }
-    if (open.n === 0) continue
-    const j = runs.findIndex((other, k) => k > i && other.n === open.n)
-    const close = runs[j]
-    if (close === undefined) {
-      hasUnmatched = true
-      continue
-    }
-    spans.push([open.at, close.at + close.n])
-    i = j
-  }
-
-  return { spans, hasUnmatched }
-}
-
-const isSkippedLine = (line: string) => {
-  const lead = line.trimStart()
-
-  return (
-    /^( {4,}|\t)/.test(line) || // indented (code, or a continuation: left alone either way)
-    lead.startsWith('|') ||
-    /\s\|\s/.test(line) || // a table row
-    lead.startsWith('/') // a slash command
-  )
-}
-
-/**
- * One paragraph's lines: plain words swell outside its code spans; paths, URLs, markup and
- * skipped lines stay. Left whole when unsure: an HTML-looking block, a link reference
- * definition, or a backtick run that matched no closer.
- */
-const fattenParagraph = (lines: readonly string[]): string[] => {
-  const first = lines[0] ?? ''
-  if (/^ {0,3}</.test(first) || /^ {0,3}\[[^\]]+\]:/.test(first)) return [...lines]
-  const { spans, hasUnmatched } = codeSpans(lines.join('\n'))
-  if (hasUnmatched) return [...lines]
-  const isCode = (at: number) => spans.some(([from, to]) => at >= from && at < to)
-  let offset = 0
-
-  return lines.map(line => {
-    const start = offset
-    offset += line.length + 1
-    if (isSkippedLine(line)) return line
-    let out = ''
-    let isFirst = true
-
-    for (let i = 0; i < line.length; ) {
-      const code = isCode(start + i)
-      let j = i
-      while (j < line.length && isCode(start + j) === code) j++
-      const piece = line.slice(i, j)
-      i = j
-
-      if (code) {
-        if (piece.trim() !== '') isFirst = false
-        out += piece
-        continue
-      }
-      out += piece
+      return line
         .split(/(\s+)/)
         .map(token => {
           if (token === '' || /^\s+$/.test(token)) return token
           const wasFirst = isFirst
           isFirst = false
-          if (wasFirst && /^\d+[.)]$/.test(token)) return token // an ordered-list marker
+          if (wasFirst && /^\d+\.$/.test(token)) return token // an ordered-list number
 
           return WORD.test(token) ? widen(token) : token
         })
         .join('')
-    }
-
-    return out
-  })
-}
-
-/**
- * Markdown with its plain words drawn double width. The one way in for every caller.
- * Fenced code (to its true close, or to the end when unclosed), indented code blocks
- * and code spans (across line breaks within a paragraph) are left exactly as written.
- */
-export const fatten = (text: string) => {
-  const out: string[] = []
-  let paragraph: string[] = []
-  let fence: Fence | null = null
-  const flush = () => {
-    out.push(...fattenParagraph(paragraph))
-    paragraph = []
-  }
-
-  for (const line of text.split('\n')) {
-    if (fence !== null) {
-      out.push(line)
-      if (fenceCloses(line, fence)) fence = null
-      continue
-    }
-    const opens = fenceOpens(line)
-    if (opens !== null) {
-      flush()
-      fence = opens
-      out.push(line)
-      continue
-    }
-    if (line.trim() === '') {
-      flush()
-      out.push(line)
-      continue
-    }
-    if (paragraph.length === 0 && /^( {4,}|\t)/.test(line)) {
-      out.push(line) // an indented code block
-      continue
-    }
-    paragraph.push(line)
-  }
-  flush()
-
-  return out.join('\n')
+    })
+    .join('\n')
 }
 
 const weighLine = (s: FatContextState) => {
