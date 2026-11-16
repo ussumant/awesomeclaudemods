@@ -54,3 +54,7 @@ In the desktop app, where `/plugin` does not run: click + next to the prompt box
 
 - Light terminal themes. The mod uses the theme's own colors, but it has only been looked at on a dark one.
 - In a window shorter than about 45 rows the biggest creature loses a couple of rows.
+
+## License
+
+MIT
