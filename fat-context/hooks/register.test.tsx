@@ -446,3 +446,147 @@ test('tool rows and folded groups put on weight only from stuffed up', async ($,
   expect(await ui.find({ type: 'Box' })).toBeUndefined()
   await ui.unmount()
 })
+
+// --- round 3: "am I inside code" follows CommonMark ---
+
+const W = (s: string) => s.replace(/[A-Za-z0-9]/g, ch => String.fromCharCode(ch.charCodeAt(0) + (/[A-Z]/.test(ch) ? 0xff21 - 65 : /[a-z]/.test(ch) ? 0xff41 - 97 : 0xff10 - 48)))
+
+test('r3 reported 1: three backticks inside a four-backtick fence are content, not its close', () => {
+  const code = '````md\n```js\nlet a = 1\n```\nstill code here\n````'
+  expect(fatten(`${code}\nafter words`)).toBe(`${code}\n${W('after words')}`)
+})
+
+test('r3 reported 2: an inline code span crossing a line break stays code on both lines', () => {
+  expect(fatten('see `code\nspans here` done')).toBe(`${W('see')} \`code\nspans here\` ${W('done')}`)
+})
+
+test('r3 sibling: a tilde fence holding a backtick fence, and the reverse', () => {
+  const tilde = '~~~\n```\nx y\n```\nstill code\n~~~'
+  expect(fatten(`${tilde}\nafter words`)).toBe(`${tilde}\n${W('after words')}`)
+  const ticks = '```\n~~~\nx y\n~~~\nstill code\n```'
+  expect(fatten(`${ticks}\nafter words`)).toBe(`${ticks}\n${W('after words')}`)
+})
+
+test('r3 sibling: a 4-backtick fence holding 3-backtick lines, then prose after the true close', () => {
+  const code = '````\n```\ncode words\n```\n````'
+  expect(fatten(`${code}\nreal prose here`)).toBe(`${code}\n${W('real prose here')}`)
+})
+
+test('r3 sibling: a fence indented 3 spaces inside a list item', () => {
+  expect(fatten('- item\n   ```\n   code words\n   ```\nafter words')).toBe(`- ${W('item')}\n   \`\`\`\n   code words\n   \`\`\`\n${W('after words')}`)
+})
+
+test('r3 sibling: an unclosed fence runs to the end of the text', () => {
+  expect(fatten('intro\n```\ncode words\n\nmore words')).toBe(`${W('intro')}\n\`\`\`\ncode words\n\nmore words`)
+})
+
+test('r3 sibling: a close needs the same character, a long enough run and nothing after it', () => {
+  const code = '```\ncode\n``` not a close\n~~~\nstill code\n```'
+  expect(fatten(`${code}\nafter`)).toBe(`${code}\n${W('after')}`)
+})
+
+test('r3 sibling: a backtick line whose info string holds a backtick opens no fence', () => {
+  // Not a fence: the next paragraph widens (a fence would hold it to the end). Its own
+  // paragraph holds backticks that match nothing, so it is left whole (fail closed, r3b).
+  expect(fatten('``` a`b\nwords here\n\nnext words')).toBe(`\`\`\` a\`b\nwords here\n\n${W('next words')}`)
+})
+
+test('r3 sibling: a double-backtick span holding a single backtick', () => {
+  expect(fatten('use ``a ` b`` here')).toBe(`${W('use')} \`\`a \` b\`\` ${W('here')}`)
+})
+
+test('r3 sibling: a double-backtick span crossing one line break', () => {
+  expect(fatten('x ``one\ntwo`` y')).toBe(`${W('x')} \`\`one\ntwo\`\` ${W('y')}`)
+})
+
+test('r3b: a paragraph with an unmatched backtick is left whole; the next paragraph is widened', () => {
+  // Fail closed: an opener that never closes means we can't tell code from prose there.
+  expect(fatten('a `b c\n\nnext words')).toBe(`a \`b c\n\n${W('next words')}`)
+  // A matching run in the next paragraph does not close it; both are left whole.
+  expect(fatten('a `b c\n\nd` e')).toBe('a `b c\n\nd` e')
+})
+
+test('r3 regression: plain prose, paths, URLs and slash commands as before', () => {
+  const cases: [string, string][] = [
+    ['Hello there, friend.', 'Ｈｅｌｌｏ ｔｈｅｒｅ, ｆｒｉｅｎｄ.'],
+    ['the path /tmp/a/b.txt', 'ｔｈｅ ｐａｔｈ /tmp/a/b.txt'],
+    ['see https://x.io/a ok', 'ｓｅｅ https://x.io/a ｏｋ'],
+    ['/fat 92', '/fat 92'],
+    ['Run `npm test` now', 'Ｒｕｎ `npm test` ｎｏｗ'],
+    ['two lines\nof prose', 'ｔｗｏ ｌｉｎｅｓ\nｏｆ ｐｒｏｓｅ'],
+    ['```bash\necho hi\n```\nok', '```bash\necho hi\n```\nｏｋ'],
+  ]
+  for (const [input, output] of cases) expect(fatten(input)).toBe(output)
+})
+
+// --- round 3b: containers, escapes, fail closed ---
+
+test('r3b gap 1 (probe): a fence opened on a "- " list-marker line stays code', () => {
+  const code = '- ```js\n  code words\n  ```'
+  expect(fatten(code)).toBe(code)
+  expect(fatten(`${code}\nafter words`)).toBe(`${code}\n${W('after words')}`)
+})
+
+test('r3b gap 2 (probe): an escaped backtick before a real span is a literal, the span stays code', () => {
+  expect(fatten('x \\` y `a b` z')).toBe(`${W('x')} \\\` ${W('y')} \`a b\` ${W('z')}`)
+})
+
+test('r3b: a fence on a "1." marker line', () => {
+  const code = '1. ```\n   code words\n   ```'
+  expect(fatten(`${code}\nafter words`)).toBe(`${code}\n${W('after words')}`)
+})
+
+test('r3b: a fence inside "> " with a blank ">" line in the middle of the code', () => {
+  const code = '> ```\n> code words\n>\n> more code\n> ```'
+  expect(fatten(`${code}\n\nafter words`)).toBe(`${code}\n\n${W('after words')}`)
+})
+
+test('r3b: a quoted fence closed by a longer run', () => {
+  const code = '> ```\n> code words\n> ````'
+  expect(fatten(`${code}\n\nafter words`)).toBe(`${code}\n\n${W('after words')}`)
+})
+
+test('r3b: a fence nested in "- > "', () => {
+  const code = '- > ```\n  > code words\n  > ```'
+  expect(fatten(`${code}\n\nafter words`)).toBe(`${code}\n\n${W('after words')}`)
+})
+
+test('r3b probe: a fence inside a blockquote inside a list item, closed by a longer run', () => {
+  const code = '- > ```\n  > code words\n  > ````'
+  expect(fatten(`${code}\n\nafter words`)).toBe(`${code}\n\n${W('after words')}`)
+})
+
+test('r3b: an unclosed fence on a container line runs to the end', () => {
+  const code = '> ```\n> code words\n\nstill code words'
+  expect(fatten(code)).toBe(code)
+})
+
+test('r3b: escapes outside spans, none inside', () => {
+  // Both backticks escaped: no span, nothing unmatched; plain words widen.
+  expect(fatten('use \\`npm\\` here')).toBe(`${W('use')} \\\`npm\\\` ${W('here')}`)
+  // Inside a span a backslash does nothing: `a\` is a whole span.
+  expect(fatten('x `a\\` y')).toBe(`${W('x')} \`a\\\` ${W('y')}`)
+  // An escaped backslash does not escape the backtick after it.
+  expect(fatten('p \\\\`q r` s')).toBe(`${W('p')} \\\\\`q r\` ${W('s')}`)
+})
+
+test('r3b: one stray backtick leaves its whole paragraph alone; the next paragraph widens', () => {
+  expect(fatten("it`s a word\nmore words\n\nnext words")).toBe(`it\`s a word\nmore words\n\n${W('next words')}`)
+})
+
+test('r3b: an HTML-looking block is left alone', () => {
+  expect(fatten('<div>\nsome words\n</div>\n\nafter words')).toBe(`<div>\nsome words\n</div>\n\n${W('after words')}`)
+  expect(fatten('   <span>hi there</span>')).toBe('   <span>hi there</span>')
+})
+
+test('r3b probe: link reference definitions are left alone', () => {
+  expect(fatten('[x]: /url "title words here"')).toBe('[x]: /url "title words here"')
+  expect(fatten('[ref]: target\n\nsee words')).toBe(`[ref]: target\n\n${W('see words')}`)
+})
+
+test('r3b sibling: a tab after a list or quote marker still strips the container', () => {
+  const tilde = '-\t~~~\n  code words\n  ~~~'
+  expect(fatten(`${tilde}\n\nafter words`)).toBe(`${tilde}\n\n${W('after words')}`)
+  const quoted = '>\t~~~\n>\tcode words\n>\t~~~'
+  expect(fatten(`${quoted}\n\nafter words`)).toBe(`${quoted}\n\n${W('after words')}`)
+})
