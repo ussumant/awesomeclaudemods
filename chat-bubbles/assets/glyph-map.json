@@ -1,0 +1,219 @@
+{
+ "font": "Bubble Caps",
+ "unitsPerEm": 2048,
+ "advance": 1266,
+ "ascent": 1950,
+ "descent": -494,
+ "ovx": 0.12,
+ "ovy": 0.35,
+ "glyphs": {
+  "U+2580": {
+   "name": "upper half block",
+   "rows": "standard block; not needed by the mod (kept seam-proof)"
+  },
+  "U+2584": {
+   "name": "lower half block",
+   "rows": "standard block; not needed by the mod (kept seam-proof)"
+  },
+  "U+2588": {
+   "name": "full block",
+   "rows": "standard block; not needed by the mod (kept seam-proof)"
+  },
+  "U+2596": {
+   "name": "quadrant lower left",
+   "rows": "standard block; not needed by the mod (kept seam-proof)"
+  },
+  "U+2597": {
+   "name": "quadrant lower right",
+   "rows": "standard block; not needed by the mod (kept seam-proof)"
+  },
+  "U+2598": {
+   "name": "quadrant upper left",
+   "rows": "standard block; not needed by the mod (kept seam-proof)"
+  },
+  "U+259D": {
+   "name": "quadrant upper right",
+   "rows": "standard block; not needed by the mod (kept seam-proof)"
+  },
+  "U+E0A4": {
+   "name": "pad fill, lower half",
+   "rows": "top pad row, every column between the corners"
+  },
+  "U+E0A5": {
+   "name": "pad fill, upper half",
+   "rows": "bottom pad row, every column between the corners"
+  },
+  "U+E0A6": {
+   "name": "typing dot",
+   "rows": "typing pill text row, fg = dot colour, bg = bubble fill"
+  },
+  "U+E0A8": {
+   "name": "soft corner top-left",
+   "rows": "soft bubble top pad row, first column"
+  },
+  "U+E0A9": {
+   "name": "soft corner top-right",
+   "rows": "soft bubble top pad row, last column"
+  },
+  "U+E0AA": {
+   "name": "soft corner bottom-left",
+   "rows": "soft bubble bottom pad row, first column"
+  },
+  "U+E0AB": {
+   "name": "soft corner bottom-right",
+   "rows": "soft bubble bottom pad row, last column"
+  },
+  "U+E0B0": {
+   "name": "pill left outer cap",
+   "rows": "top pad row, 1st column"
+  },
+  "U+E0B1": {
+   "name": "pill left inner cap",
+   "rows": "top pad row, 2nd column"
+  },
+  "U+E0B2": {
+   "name": "pill left outer cap",
+   "rows": "first text row, 1st column"
+  },
+  "U+E0B3": {
+   "name": "pill left inner cap",
+   "rows": "first text row, 2nd column"
+  },
+  "U+E0B4": {
+   "name": "pill left outer cap",
+   "rows": "last text row, 1st column"
+  },
+  "U+E0B5": {
+   "name": "pill left inner cap",
+   "rows": "last text row, 2nd column"
+  },
+  "U+E0B6": {
+   "name": "pill left outer cap",
+   "rows": "only text row (one-line bubble), 1st column"
+  },
+  "U+E0B7": {
+   "name": "pill left inner cap",
+   "rows": "only text row (one-line bubble), 2nd column"
+  },
+  "U+E0B8": {
+   "name": "pill left outer cap",
+   "rows": "bottom pad row, 1st column"
+  },
+  "U+E0B9": {
+   "name": "pill left inner cap",
+   "rows": "bottom pad row, 2nd column"
+  },
+  "U+E0BA": {
+   "name": "pill right outer cap",
+   "rows": "top pad row, last column"
+  },
+  "U+E0BB": {
+   "name": "pill right inner cap",
+   "rows": "top pad row, 2nd-last column"
+  },
+  "U+E0BC": {
+   "name": "pill right outer cap",
+   "rows": "first text row, last column"
+  },
+  "U+E0BD": {
+   "name": "pill right inner cap",
+   "rows": "first text row, 2nd-last column"
+  },
+  "U+E0BE": {
+   "name": "pill right outer cap",
+   "rows": "last text row, last column"
+  },
+  "U+E0BF": {
+   "name": "pill right inner cap",
+   "rows": "last text row, 2nd-last column"
+  },
+  "U+E0C0": {
+   "name": "pill right outer cap",
+   "rows": "only text row (one-line bubble), last column"
+  },
+  "U+E0C1": {
+   "name": "pill right inner cap",
+   "rows": "only text row (one-line bubble), 2nd-last column"
+  },
+  "U+E0C2": {
+   "name": "pill right outer cap",
+   "rows": "bottom pad row, last column"
+  },
+  "U+E0C3": {
+   "name": "pill right inner cap",
+   "rows": "bottom pad row, 2nd-last column"
+  },
+  "U+E0C4": {
+   "name": "tail cap, only text row (one-line bubble) (sent, right side)",
+   "rows": "sent tail: only text row (one-line bubble), last column"
+  },
+  "U+E0C5": {
+   "name": "tail cap, bottom pad row (sent, right side)",
+   "rows": "sent tail: bottom pad row, 2nd-last column"
+  },
+  "U+E0C6": {
+   "name": "tail cap, bottom pad row (sent, right side)",
+   "rows": "sent tail: bottom pad row, last column"
+  },
+  "U+E0C7": {
+   "name": "tail cap, bottom pad row (sent, right side)",
+   "rows": "sent tail: bottom pad row, outside column"
+  },
+  "U+E0C8": {
+   "name": "tail cap, last text row (sent, right side)",
+   "rows": "sent tail: last text row, last column"
+  },
+  "U+E0C9": {
+   "name": "tail cap, only text row (one-line bubble) (received, left side)",
+   "rows": "received tail: only text row (one-line bubble), 1st column"
+  },
+  "U+E0CA": {
+   "name": "tail cap, bottom pad row (received, left side)",
+   "rows": "received tail: bottom pad row, 2nd column"
+  },
+  "U+E0CB": {
+   "name": "tail cap, bottom pad row (received, left side)",
+   "rows": "received tail: bottom pad row, 1st column"
+  },
+  "U+E0CC": {
+   "name": "tail cap, bottom pad row (received, left side)",
+   "rows": "received tail: bottom pad row, outside column, left of the bubble"
+  },
+  "U+E0CD": {
+   "name": "tail cap, last text row (received, left side)",
+   "rows": "received tail: last text row, 1st column"
+  },
+  "U+E0CE": {
+   "name": "avatar, row 1, cell 1 of 4",
+   "rows": "header avatar row 1, column 1 (fg avatar colour, bg page)"
+  },
+  "U+E0CF": {
+   "name": "avatar, row 1, cell 2 of 4",
+   "rows": "header avatar row 1, column 2 (fg avatar colour, bg page)"
+  },
+  "U+E0D0": {
+   "name": "avatar, row 1, cell 3 of 4",
+   "rows": "header avatar row 1, column 3 (fg avatar colour, bg page)"
+  },
+  "U+E0D1": {
+   "name": "avatar, row 1, cell 4 of 4",
+   "rows": "header avatar row 1, column 4 (fg avatar colour, bg page)"
+  },
+  "U+E0D2": {
+   "name": "avatar, row 2, cell 1 of 4",
+   "rows": "header avatar row 2, column 1 (fg avatar colour, bg page)"
+  },
+  "U+E0D3": {
+   "name": "avatar, row 2, cell 2 of 4",
+   "rows": "header avatar row 2, column 2 (fg avatar colour, bg page)"
+  },
+  "U+E0D4": {
+   "name": "avatar, row 2, cell 3 of 4",
+   "rows": "header avatar row 2, column 3 (fg avatar colour, bg page)"
+  },
+  "U+E0D5": {
+   "name": "avatar, row 2, cell 4 of 4",
+   "rows": "header avatar row 2, column 4 (fg avatar colour, bg page)"
+  }
+ }
+}

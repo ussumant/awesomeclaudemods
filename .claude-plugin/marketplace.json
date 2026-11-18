@@ -6,6 +6,11 @@
       "name": "fat-context",
       "source": "./fat-context",
       "description": "The session gets visibly fat as the context window fills up."
+    },
+    {
+      "name": "chat-bubbles",
+      "source": "./chat-bubbles",
+      "description": "The terminal chat as a text thread: your messages in blue bubbles on the right, Claude's in gray on the left."
     }
   ]
 }
