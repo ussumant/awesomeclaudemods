@@ -80,6 +80,7 @@ What you see:
 | your message | a blue bubble on the right with white text. Messages you send through Remote Control (a phone or the web) or as a Slack ping look the same. |
 | Claude's reply | a gray bubble on the left, in Claude Code's light or dark theme |
 | while Claude works | a gray bubble with three dots |
+| under the message box | the keyboard tips are hidden. A count such as `1 shell` stays |
 | tool steps | hidden |
 | a failed or stopped step | one small red line, such as `Read failed`, `Bash stopped` or `1 of 3 steps failed`. The error text stays out of the chat. |
 | a table in a reply | the bubble grows as wide as the table needs, up to the whole window. A table too wide for any bubble keeps Claude Code's own look, so it stays readable. |
@@ -127,20 +128,20 @@ To use `round`:
 3. Close the terminal and open a new one.
 4. Run `/bubbles style round`.
 
-`round` works only in the full-screen chat view (the `tui: fullscreen` setting). On the normal scrolling screen a saved `round` draws `block`. To go back to bubbles that need no font, run `/bubbles style block`.
+`round` works only in the full-screen chat view (the `tui: fullscreen` setting). On the normal scrolling screen a saved `round` draws `block`. If the bubbles still come out square, start Claude Code with `CLAUDE_CODE_NO_FLICKER=1 claude`, which forces the full-screen view. To go back to bubbles that need no font, run `/bubbles style block`.
 
 ### Commands
 
 | Command | What it does |
 | --- | --- |
 | `/bubbles` | shows the current settings |
-| `/bubbles on` and `/bubbles off` | turns the mod on or off |
+| `/bubbles on` and `/bubbles off` | turns the mod on or off in the chat you type it in. Every new chat starts on |
 | `/bubbles detail on` and `/bubbles detail off` | shows or hides the tool steps and status lines |
 | `/bubbles style block` | picks the bubble shape: `block`, `pill`, `tail` or `round` |
 | `/bubbles style` | lists the shapes |
 | `/bubbles tail on` and `/bubbles tail off` | shows or hides the tails in `round` |
 
-Settings are kept between sessions.
+Style, detail and tail are kept between sessions. On and off apply to the chat you type them in.
 
 ### See the hidden steps
 

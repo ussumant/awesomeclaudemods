@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, Register, StateDollar } from 'claude-code'
 
 import { capRows } from './cap'
 import type { CapProps } from './cap'
@@ -71,8 +71,10 @@ const SPARE = 2 // columns a table or fence estimate keeps in hand
 const TIME_GAP_MS = 15 * 60_000
 const FALLBACK_COLUMNS = 80
 
-// Switches kept across sessions in this mod's store.
-const OFF_KEY = 'isOff' // the whole mod
+// Switches kept across sessions in this mod's store. On and off is not one of
+// them: it lives in the session's state (`chatOff` below), so it holds for the
+// chat it was typed in, and a new chat starts on. An `isOff` an older version
+// left in the store is never read.
 const DETAIL_KEY = 'detail' // show what "only the conversation" hides
 const STYLE_KEY = 'style' // the bubble shape
 const TAIL_KEY = 'tail' // the `round` style's tails
@@ -84,20 +86,21 @@ const DEFAULT_SHAPE: Shape = 'block'
 
 type Prefs = { isOff: boolean; detail: boolean; shape: Shape; tail: boolean }
 
-// The switches as last read from the store, kept in memory: read once per
-// session (at session.start, or by the first draw that comes earlier), and
-// changed by `/bubbles` once the store has the change. Draws never read the
-// store after a good read. A hot reload starts with none and reads again.
+// The switches as last read from the store and this chat's state, kept in
+// memory: read once per session (at session.start, or by the first draw that
+// comes earlier), and changed by `/bubbles` once the store or state has the
+// change. Draws never read either after a good read. A hot reload, or a
+// /clear (whose new session has fresh state), starts with none and reads again.
 let prefsCache: Promise<Prefs> | undefined
 
 const DEFAULT_PREFS: Prefs = { isOff: false, detail: false, shape: DEFAULT_SHAPE, tail: true }
 
-type StoreReader = { store: { get: (key: string) => Promise<unknown> } }
+type StoreReader = { store: { get: (key: string) => Promise<unknown> } } & StateDollar
 
 // Unset means on, detail off, block, tail on. A read that fails rejects.
 async function readPrefs($: StoreReader): Promise<Prefs> {
   const [off, detail, style, tail] = await Promise.all([
-    $.store.get(OFF_KEY),
+    read($, chatOff),
     $.store.get(DETAIL_KEY),
     $.store.get(STYLE_KEY),
     $.store.get(TAIL_KEY),
@@ -133,13 +136,14 @@ async function prefsOf($: StoreReader): Promise<Prefs> {
   }
 }
 
-// Writes one switch to the store, then (only once that write succeeded) to
-// the in-memory copy. It starts from a fresh read of the store, never from
-// defaults a failed read left for a draw: a read or a write that fails
-// rejects, and nothing changes.
+// Writes one switch (on and off to this chat's state, the rest to the store),
+// then (only once that write succeeded) to the in-memory copy. It starts from
+// a fresh read, never from defaults a failed read left for a draw: a read or
+// a write that fails rejects, and nothing changes.
 async function setPref($: EngineInterface, change: Partial<Prefs>) {
   const current = await readPrefs($)
-  if (change.isOff !== undefined) await $.store.set(OFF_KEY, change.isOff)
+  const off = change.isOff
+  if (off !== undefined) await update($, chatOff, () => off)
   if (change.detail !== undefined) await $.store.set(DETAIL_KEY, change.detail)
   if (change.shape !== undefined) await $.store.set(STYLE_KEY, change.shape)
   if (change.tail !== undefined) await $.store.set(TAIL_KEY, change.tail)
@@ -151,6 +155,10 @@ async function setPref($: EngineInterface, change: Partial<Prefs>) {
 const prompts = atom({ plugin: 'chat-bubbles', key: 'prompts' } as const, [], {
   shape: 'prompts-1',
 })
+
+// Bubbles off in this chat: true after `/bubbles off` here, false (the
+// initial) in every new chat.
+const chatOff = atom({ plugin: 'chat-bubbles', key: 'isOff' } as const, false)
 
 // The thread's first typed prompt, by id, kept on its own: `prompts` keeps the
 // last 500 only, so its first entry is not the thread's first after that.
@@ -1021,7 +1029,11 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   // A /clear starts a new thread: the next prompt gets the header again.
+  // The session after any end has its own state (a /clear's is fresh, so
+  // bubbles on) but may raise no session.start here, so the kept switches are
+  // dropped and the next draw reads again.
   on('session.end', async ($, e, next) => {
+    prefsCache = undefined
     if (e.reason === 'clear') {
       await update($, prompts, () => [])
       await update($, first, () => '')
@@ -1056,7 +1068,7 @@ export const register: Register = on => {
       await setPref($, { isOff: word === 'off' })
       await redraw($)
 
-      return { text: `Chat bubbles ${word}.`, isTextDisplayOnly: true }
+      return { text: `Chat bubbles ${word} in this chat.`, isTextDisplayOnly: true }
     }
 
     if (word === 'detail' && (second === 'on' || second === 'off') && words.length === 2) {
@@ -1087,7 +1099,7 @@ export const register: Register = on => {
     const prefs = await prefsOf($)
 
     return {
-      text: `Chat bubbles ${prefs.isOff ? 'off' : 'on'}. Detail ${prefs.detail ? 'on' : 'off'}. Style ${prefs.shape}. Tail ${prefs.tail ? 'on' : 'off'}.`,
+      text: `Chat bubbles ${prefs.isOff ? 'off' : 'on'} in this chat. Detail ${prefs.detail ? 'on' : 'off'}. Style ${prefs.shape}. Tail ${prefs.tail ? 'on' : 'off'}.`,
       isTextDisplayOnly: true,
     }
   }).catch(() => ({ text: 'Chat bubbles: that did not take. Try /bubbles again.', isTextDisplayOnly: true as const }))
@@ -1450,6 +1462,40 @@ export const register: Register = on => {
 
     return next({ ...e, props: { ...e.props, rows: [] } })
   }).catch(($, e, next) => next(e))
+
+  // The dim line under the prompt without its keyboard tips (`(shift+tab to
+  // cycle)`, `esc to interrupt`). The engine draws the permission mode
+  // (`⏵⏵ auto mode on`) outside `hint`, so it stays, and so does the row.
+  // A count or any other text stays beside it. A line with no tip, detail
+  // on, the mod off and other surfaces keep the engine's own line.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || typeof e.props.hint !== 'string') return next(e)
+    const hint = hintWithoutTips(e.props.hint)
+    if (hint === undefined) return next(e)
+    const prefs = await prefsOf($)
+    if (prefs.isOff || prefs.detail) return next(e)
+
+    return next({ ...e, props: { ...e.props, hint } })
+  }).catch(($, e, next) => next(e))
+}
+
+// The keyboard tips the dim line under the prompt shows (seen in real chats).
+// `↓ to manage` and `enter to view tasks` belong to a pill's count, so they
+// are not tips and stay with it.
+const PROMPT_TIPS: ReadonlySet<string> = new Set(['(shift+tab to cycle)', 'esc to interrupt', '? for shortcuts'])
+
+// The line under the prompt without its tips: every other part (a count such
+// as `1 shell` or `← 5 agents`, its key, a warning) kept in order, '' when it
+// holds tips alone. Undefined (keep the engine's line) when it holds no tip:
+// a pill alone, the mode words of a passing frame. Unknown text is never
+// dropped. The engine draws the line again as a count changes, and each draw
+// comes through here, so the count stays live.
+export function hintWithoutTips(hint: string): string | undefined {
+  if (hint.trim() === '') return undefined
+  const parts = hint.split(' · ').map(part => part.trim())
+  const kept = parts.filter(part => !PROMPT_TIPS.has(part))
+
+  return kept.length === parts.length ? undefined : kept.join(' · ')
 }
 
 type HiddenRow = {

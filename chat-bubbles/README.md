@@ -10,6 +10,10 @@ closing line and the notice under the logo are hidden. A tool call that failed
 or was stopped becomes one short red line; its error text shows with
 `/bubbles detail on` or ctrl+o (the full transcript).
 
+The keyboard tips under the prompt (`shift+tab to cycle`, `esc to interrupt`)
+are hidden, even beside a count such as `1 shell` or `← 5 agents`, which stays;
+`/bubbles detail on` brings them back.
+
 Colours follow Claude Code's own `theme` setting (light or dark). Messages you
 send from the terminal, from Remote Control (a phone or the web) or as a Slack
 ping get a blue bubble. Messages from other agents, tasks, sessions and
@@ -41,14 +45,16 @@ under it (no blank line between) keeps the usual 85% bubble and may wrap.
 ## Commands
 
 - `/bubbles` shows the current settings.
-- `/bubbles on` and `/bubbles off` turn the mod on and off.
+- `/bubbles on` and `/bubbles off` turn the mod on and off in the chat you type
+  them in. Every new chat starts on.
 - `/bubbles detail on` brings back the hidden tool rows and status lines;
   `/bubbles detail off` hides them again.
 - `/bubbles style block|pill|tail|round` picks the bubble shape. `block` is the
   default.
 - `/bubbles tail on|off` turns the tails of the `round` style on or off.
 
-Settings are kept between sessions.
+Style, detail and tail are kept between sessions. On and off apply to the chat
+you type them in.
 
 ## The `round` style needs a font
 

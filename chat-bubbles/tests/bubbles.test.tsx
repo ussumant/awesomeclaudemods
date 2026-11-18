@@ -9,6 +9,7 @@ import {
   estimateContentWidth,
   forgetAllFaults,
   hasFaulted,
+  hintWithoutTips,
   isRecorded,
   noteFault,
   recoverFaults,
@@ -475,7 +476,7 @@ test('H3: /bubbles while the store cannot be read changes nothing', async ($, on
   // The stored pill and "on" are honoured; detail stayed off.
   expect((await ui.find({ type: 'Text', text: /^▗/ }))?.text).toBe(`▗${'▄'.repeat(13)}▖`)
   await ui.unmount()
-  expect((await typed($, '')).text).toBe('Chat bubbles on. Detail off. Style pill. Tail on.')
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail off. Style pill. Tail on.')
 })
 
 // G2c: a failed store read is not kept for the session.
@@ -502,7 +503,8 @@ test('G2c: a failed store read uses the defaults once, then reads again', async 
   await second.unmount()
 })
 
-// F4: the switches are read from the store once, not on every draw.
+// F4: the switches are read from the store once, not on every draw. On and
+// off is this chat's state, so the store's old `isOff` is never read.
 test('F4: many draws read each stored switch at most once', async ($, on) => {
   const reads: Record<string, number> = {}
   on('store.get', (_, e) => {
@@ -524,7 +526,7 @@ test('F4: many draws read each stored switch at most once', async ($, on) => {
   }
 
   expect(Object.values(reads).every(n => n <= 1)).toBe(true)
-  expect(Object.keys(reads).sort()).toEqual(['detail', 'isOff', 'style', 'tail'])
+  expect(Object.keys(reads).sort()).toEqual(['detail', 'style', 'tail'])
 })
 
 test('a drawn reply with a table takes the estimated width', async ($, on) => {
@@ -553,7 +555,7 @@ test('/bubbles style picks the shape, is stored, and lists the names when unknow
   await ui.unmount()
 
   expect((await typed($, 'style oval')).text).toBe('Styles: pill, tail, block, round.')
-  expect((await typed($, '')).text).toBe('Chat bubbles on. Detail off. Style block. Tail on.')
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail off. Style block. Tail on.')
 
   expect((await typed($, 'style pill')).text).toBe('Style pill.')
   ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
@@ -564,7 +566,7 @@ test('/bubbles style picks the shape, is stored, and lists the names when unknow
 test('a stored style and detail are read back', async ($, on) => {
   engineDraws(on, { style: 'tail', detail: true })
 
-  expect((await typed($, '')).text).toBe('Chat bubbles on. Detail on. Style tail. Tail on.')
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail on. Style tail. Tail on.')
 })
 
 // ---- the thread header and time lines ------------------------------------
@@ -868,7 +870,7 @@ test('M1: detail on, the ctrl+o view and mod off keep the engine\'s failed rows'
   await detail.unmount()
 
   expect((await typed($, 'detail off')).text).toBe('Detail off.')
-  expect((await typed($, 'off')).text).toBe('Chat bubbles off.')
+  expect((await typed($, 'off')).text).toBe('Chat bubbles off in this chat.')
   const off = await $.ui.mount({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'e3', isErrored: true } })
   expect(await isEngine(off)).toBe(true)
   await off.unmount()
@@ -910,7 +912,7 @@ test('/bubbles detail on brings the hidden rows back; off hides them again', asy
   engineDraws(on)
 
   expect((await typed($, 'detail on')).text).toBe('Detail on.')
-  expect((await typed($, '')).text).toBe('Chat bubbles on. Detail on. Style block. Tail on.')
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail on. Style block. Tail on.')
   for (const row of HIDDEN) {
     const ui = await $.ui.mount({ ...row, surface: 'terminal' })
     expect({ component: row.component, engine: await isEngine(ui) }).toEqual({ component: row.component, engine: true })
@@ -1449,7 +1451,7 @@ test('L2: the gray line falls through: detail on, ctrl+o, mod off, empty text, o
   await detail.unmount()
 
   expect((await typed($, 'detail off')).text).toBe('Detail off.')
-  expect((await typed($, 'off')).text).toBe('Chat bubbles off.')
+  expect((await typed($, 'off')).text).toBe('Chat bubbles off in this chat.')
   const off = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: PEER })
   expect(await isEngine(off)).toBe(true)
   await off.unmount()
@@ -1582,9 +1584,9 @@ test('L1: in round, full screen, a summary carries the same caps as any reply', 
 test('/bubbles off passes everything through, the spinner, the hint and the hidden rows included', async ($, on) => {
   engineDraws(on)
 
-  expect((await typed($, '')).text).toBe('Chat bubbles on. Detail off. Style block. Tail on.')
-  expect((await typed($, 'off')).text).toBe('Chat bubbles off.')
-  expect((await typed($, '')).text).toBe('Chat bubbles off. Detail off. Style block. Tail on.')
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail off. Style block. Tail on.')
+  expect((await typed($, 'off')).text).toBe('Chat bubbles off in this chat.')
+  expect((await typed($, '')).text).toBe('Chat bubbles off in this chat. Detail off. Style block. Tail on.')
 
   for (const target of [PROMPT, REPLY, SPINNER, ...HIDDEN] as const) {
     const ui = await $.ui.mount({ ...target, surface: 'terminal' })
@@ -1593,10 +1595,105 @@ test('/bubbles off passes everything through, the spinner, the hint and the hidd
     await ui.unmount()
   }
 
-  expect((await typed($, ' ON ')).text).toBe('Chat bubbles on.')
+  expect((await typed($, ' ON ')).text).toBe('Chat bubbles on in this chat.')
   const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
   expect((await ui.find({ key: 'bubble-user' }))?.props.backgroundColor).toBe('#0073EB')
   await ui.unmount()
+})
+
+// ---- on and off belong to one chat ---------------------------------------
+
+// Chats that share one store, each with the session state its host holds for
+// it: `chat.now` names the chat whose state the mod reads and writes. A new
+// chat (or a /clear) is a name never used, so its state starts empty.
+function chats(on: On, store: Record<string, unknown> = {}) {
+  engineDraws(on, store)
+  on('command.register', () => ({ value: { command: 'bubbles' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  const chat = { now: 'a' }
+  const held: Record<string, { value: unknown; version: number }> = {}
+  on('state.get', (_, e, next) => {
+    if (e.plugin !== 'chat-bubbles' || e.key !== 'isOff') return next(e)
+
+    return { value: held[chat.now] ?? { value: undefined, version: 0 } }
+  })
+  on('state.set', (_, e, next) => {
+    if (e.plugin !== 'chat-bubbles' || e.key !== 'isOff') return next(e)
+    const version = held[chat.now]?.version ?? 0
+    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false, version } }
+    held[chat.now] = { value: e.value, version: version + 1 }
+
+    return { value: { isSet: true, version: version + 1 } }
+  })
+
+  return chat
+}
+
+// Whether a typed prompt draws as a bubble (true) or the engine's row (false).
+async function bubbled($: Engine) {
+  const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const isBubble = (await ui.find({ key: 'bubble-user' })) !== undefined
+  await ui.unmount()
+
+  return isBubble
+}
+
+async function newChat($: Engine, chat: { now: string }, name: string) {
+  chat.now = name
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+}
+
+test('/bubbles off in one chat leaves another chat on the same store on', async ($, on) => {
+  const chat = chats(on)
+  await newChat($, chat, 'a')
+  await typed($, 'off')
+  expect(await bubbled($)).toBe(false)
+
+  await newChat($, chat, 'b')
+  expect(await bubbled($)).toBe(true)
+  expect((await typed($, '')).text).toMatch(/^Chat bubbles on/)
+})
+
+test('a new chat starts on even when the store holds an old isOff: true', async ($, on) => {
+  const chat = chats(on, { isOff: true })
+  await newChat($, chat, 'a')
+  expect(await bubbled($)).toBe(true)
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail off. Style block. Tail on.')
+})
+
+test('/bubbles on, off and bare say "in this chat"', async ($, on) => {
+  const chat = chats(on)
+  await newChat($, chat, 'a')
+  expect((await typed($, 'off')).text).toBe('Chat bubbles off in this chat.')
+  expect((await typed($, '')).text).toBe('Chat bubbles off in this chat. Detail off. Style block. Tail on.')
+  expect((await typed($, 'on')).text).toBe('Chat bubbles on in this chat.')
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail off. Style block. Tail on.')
+})
+
+// A /clear raises no new session start in the same process, but the host gives
+// the next session fresh state: the kept copy must not outlive the old one.
+test('after /clear the chat is on again, as its fresh state says', async ($, on) => {
+  const chat = chats(on)
+  await newChat($, chat, 'a')
+  await typed($, 'off')
+  expect(await bubbled($)).toBe(false)
+
+  await $.session.end({ reason: 'clear', sessionId: 'a', resume: { id: 'a' } })
+  chat.now = 'a-cleared'
+  expect(await bubbled($)).toBe(true)
+  expect((await typed($, '')).text).toMatch(/^Chat bubbles on/)
+})
+
+// Style, detail and tail stay shared: a new chat reads them from the store.
+test('style, detail and tail set in one chat carry to a new chat', async ($, on) => {
+  const chat = chats(on)
+  await newChat($, chat, 'a')
+  await typed($, 'style pill')
+  await typed($, 'detail on')
+  await typed($, 'tail off')
+  await newChat($, chat, 'b')
+  expect((await typed($, '')).text).toMatch(/ Detail on\. Style pill\. Tail off\.$/)
 })
 
 // ---- colours from Claude Code's theme setting ----------------------------
@@ -1912,10 +2009,10 @@ test('/bubbles tail on|off is stored and reported', async ($, on) => {
   engineDraws(on)
 
   expect((await typed($, 'tail off')).text).toBe('Tail off.')
-  expect((await typed($, '')).text).toBe('Chat bubbles on. Detail off. Style block. Tail off.')
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail off. Style block. Tail off.')
   expect((await typed($, 'tail on')).text).toBe('Tail on.')
   expect((await typed($, 'style round')).text).toBe('Style round.')
-  expect((await typed($, '')).text).toBe('Chat bubbles on. Detail off. Style round. Tail on.')
+  expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail off. Style round. Tail on.')
 })
 
 // K1: the round thread opens with the avatar.
@@ -2144,7 +2241,122 @@ test('T1: a collapsed band hands on no rows; expanded, a survey, detail on or mo
   expect((await typed($, 'detail on')).text).toBe('Detail on.')
   await draw({})
   expect((await typed($, 'detail off')).text).toBe('Detail off.')
-  expect((await typed($, 'off')).text).toBe('Chat bubbles off.')
+  expect((await typed($, 'off')).text).toBe('Chat bubbles off in this chat.')
   await draw({})
   expect(seen).toEqual([0, 1, 1, 1, 1])
+})
+
+// T20: the dim line under the prompt loses its keyboard tips. Every string
+// below is one a real chat handed the PromptHint hook (ticket 20, P1). The
+// permission-mode words (`⏵⏵ auto mode on`) are drawn by the engine outside
+// `hint`, so they stay whatever the hook returns.
+const HINT = {
+  plugin: 'chat-bubbles',
+  component: 'PromptHint',
+  viewport: VIEWPORT,
+  props: { isDraft: false, isWorking: false, hint: '(shift+tab to cycle)' },
+} as const
+
+test('T20: a line of tips alone becomes empty (opened, typing, after an answer, working)', () => {
+  // Settled lines: just opened, typed text, after an answer; then a turn running.
+  expect(hintWithoutTips('(shift+tab to cycle)')).toBe('')
+  expect(hintWithoutTips('(shift+tab to cycle) · esc to interrupt')).toBe('')
+  // Named by the engine's own docs; never seen here (the chat starts in auto mode).
+  expect(hintWithoutTips('? for shortcuts')).toBe('')
+  expect(hintWithoutTips('? for shortcuts · esc to interrupt')).toBe('')
+})
+
+test('T20: a line with no tip, or with anything the rule does not know, is left as the engine drew it', () => {
+  // Manual mode: the engine's own line is empty; touching it would add a dot.
+  expect(hintWithoutTips('')).toBeUndefined()
+  // A background shell's pill with no tip beside it: left whole.
+  expect(hintWithoutTips('1 shell · ↓ to manage')).toBeUndefined()
+  expect(hintWithoutTips('1 shell · enter to view tasks')).toBeUndefined()
+  // Passing frames while the mode changes, which carry the mode words.
+  expect(hintWithoutTips('auto mode on (shift+tab to cycle)')).toBeUndefined()
+  expect(hintWithoutTips('manual mode on')).toBeUndefined()
+  expect(hintWithoutTips('accept edits on (shift+tab to cycle)')).toBeUndefined()
+  expect(hintWithoutTips('plan mode on (shift+tab to cycle)')).toBeUndefined()
+  // A tip's words inside a longer part are not a tip.
+  expect(hintWithoutTips('esc to interrupt now')).toBeUndefined()
+})
+
+test('T21: from a line with a count, only the tips go; every other part stays, in order', () => {
+  // A team's agents beside both tips.
+  expect(hintWithoutTips('(shift+tab to cycle) · esc to interrupt · ← 5 agents')).toBe('← 5 agents')
+  // A shell's count keeps the key it advertises.
+  expect(hintWithoutTips('esc to interrupt · 1 shell · ↓ to manage')).toBe('1 shell · ↓ to manage')
+  // The order a real chat drew while a turn ran beside a shell.
+  expect(hintWithoutTips('1 shell · esc to interrupt · ↓ to manage')).toBe('1 shell · ↓ to manage')
+  // Text the rule does not know is never dropped, so a warning stays.
+  expect(hintWithoutTips('Context low · esc to interrupt')).toBe('Context low')
+})
+
+function hintBeneath(on: On, seen: string[], failOn?: string) {
+  let failed = false
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
+    if (failOn !== undefined && e.props.hint === failOn && !failed) {
+      failed = true
+      seen.push(`threw on "${e.props.hint}"`)
+      throw new Error('draw failed')
+    }
+    seen.push(e.props.hint)
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>{`hint: ${e.props.hint}`}</Text>
+  })
+}
+
+async function drawHint($: Engine, hint: string, surface: 'terminal' | 'desktop' = 'terminal') {
+  const ui = await $.ui.mount({ ...HINT, surface, props: { ...HINT.props, hint } } as never)
+  await ui.unmount()
+}
+
+test('T20: in clean mode the tips go, a count stays; detail on, mod off and the desktop keep the line', async ($, on) => {
+  mock.store(on)
+  on('ui.invalidate', () => ({ value: undefined }))
+  const seen: string[] = []
+  hintBeneath(on, seen)
+
+  await drawHint($, '(shift+tab to cycle)')
+  await drawHint($, '(shift+tab to cycle) · esc to interrupt')
+  await drawHint($, '1 shell · esc to interrupt · ↓ to manage')
+  await drawHint($, '(shift+tab to cycle) · esc to interrupt · ← 5 agents')
+  await drawHint($, '(shift+tab to cycle)', 'desktop')
+  expect((await typed($, 'detail on')).text).toBe('Detail on.')
+  await drawHint($, '(shift+tab to cycle) · esc to interrupt')
+  await drawHint($, '(shift+tab to cycle) · esc to interrupt · ← 5 agents')
+  expect((await typed($, 'detail off')).text).toBe('Detail off.')
+  expect((await typed($, 'off')).text).toBe('Chat bubbles off in this chat.')
+  await drawHint($, '(shift+tab to cycle)')
+  await drawHint($, 'esc to interrupt · 1 shell · ↓ to manage')
+  expect(seen).toEqual([
+    '',
+    '',
+    '1 shell · ↓ to manage',
+    '← 5 agents',
+    '(shift+tab to cycle)',
+    '(shift+tab to cycle) · esc to interrupt',
+    '(shift+tab to cycle) · esc to interrupt · ← 5 agents',
+    '(shift+tab to cycle)',
+    'esc to interrupt · 1 shell · ↓ to manage',
+  ])
+})
+
+// Nothing in this hook can be made to throw in the kit (its store read and
+// the rule never throw), so its `.catch` → `next(e)` is the same one-liner as
+// every other hook's. What the kit can show: a draw that fails on the
+// rewritten line is skipped, and the engine's own row is drawn in its place.
+test('T20: a draw that throws on the rewritten line leaves the engine\'s own row', async ($, on) => {
+  mock.store(on)
+  on('ui.invalidate', () => ({ value: undefined }))
+  const seen: string[] = []
+  // The stand-in beneath fails once, on the rewritten (empty) line.
+  hintBeneath(on, seen, '')
+
+  const ui = await $.ui.mount({ ...HINT, surface: 'terminal' } as never)
+  expect(seen).toEqual(['threw on ""'])
+  expect(await ui.find({ type: 'engine' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^hint: / })).toBeUndefined()
+  await ui.unmount()
 })

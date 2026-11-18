@@ -10,6 +10,8 @@ declare module 'claude-code' {
       first: string
       // Claude Code's `theme` setting as last read; '' when unknown.
       theme: string
+      // Bubbles off in this chat (`/bubbles off`); unset, so on, in a new one.
+      isOff: boolean
     }
   }
 }
