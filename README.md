@@ -2,7 +2,15 @@
 
 A Claude Code mod that makes your terminal chat look and feel like iMessage. A mod changes how Claude Code looks or behaves. This one is called `chat-bubbles` when you install it.
 
-Your Claude Code chat looks like a text thread. Your messages sit in blue bubbles on the right. Claude's replies sit in gray bubbles on the left. While Claude works, a gray bubble with three dots shows it is typing. The steps Claude takes stay out of sight, so you read only the conversation.
+Your Claude Code chat becomes a text thread:
+
+- Your messages sit in blue bubbles on the right and Claude's replies in gray bubbles on the left. While Claude works, a gray bubble with three dots shows it is typing.
+- Hold a bubble to tapback it (♥ 👍 👎 HA !! ?), reply to it in a thread, or copy it.
+- Claude tapbacks you back: an emoji on your message for what it is doing with it. Rest the pointer on it to read a few words more.
+- Pictures show as photos: ones you paste or drag in, pictures Claude reads, and pictures Claude sends you. In Ghostty, kitty and iTerm2 they are real pixels.
+- `Delivered` under your newest message turns into `Read` and the time once Claude starts answering.
+
+The steps Claude takes stay out of sight, so you read only the conversation.
 
 [![A Claude Code chat in the terminal drawn as a text thread, with blue bubbles on the right for the person, gray bubbles on the left for Claude, a reply bubble that widens to hold a table, and Delivered under the newest message](pictures/chat-bubbles-demo.gif)](pictures/chat-bubbles-demo.mp4)
 
@@ -56,6 +64,7 @@ These work in the full-screen chat view (the `tui: fullscreen` setting), in the 
 - Reply puts "Replying to Claude: …" above the message box (✕ cancels it). Your message then shows as a thread: a faded copy of the original, a line running down into your reply, and Claude's answer hooked onto the same line. Claude is told which message you meant. "1 Reply" shows under the original.
 - Copy puts the whole message on the clipboard. The bubble catches the press, so dragging to select text inside a bubble no longer works there. Copy, or `/bubbles off` for a moment, stands in for it.
 - Claude gets a `react` tool and tapbacks your newest message, first thing when its answer will take a while. The emoji says what it is doing with your message: ✅ for a decision it takes on, 🤔 for a question it is thinking through, or one for the work itself (🐛 a bug, 🧪 tests, 📸 pictures). Rest the pointer on Claude's badge to read a few words on what it is doing. They stay after Claude is done. Some messages get only a tapback back.
+- If Claude has not tapbacked your message 4 seconds into a long answer, the mod puts 🤔 on it, with "thinking it through" under the pointer. Claude's own tapback replaces it.
 - `Delivered` under your newest message turns into `Read` and the time once Claude starts answering.
 
 The typing dots pulse in a wave.
@@ -79,7 +88,7 @@ Photos are made with `sips`, so they need macOS. The files are kept in `/tmp/cha
 
 A terminal draws every shape with a font. Normal fonts have no round bubble corners or tails. So the mod comes with a small font, Bubble Caps. Its bubble corners, tails, typing dots and Claude's round avatar sit in a private range of characters that normal text never uses. It also holds a few standard block characters. You list it after your own font, so your font still draws all your text.
 
-Without the font, those characters show as empty boxes. That is why a new install starts with `block`: square bubbles made of filled lines, with no font needed. `pill` and `tail` need no extra font either. They use half-block characters, and some terminals, Cursor's among them, draw a thin seam in those.
+Without the font, those characters show as empty boxes, or in Ghostty as garbled bubble edges. That is why a new install starts with `block`: square bubbles made of filled lines, with no font needed. `pill` and `tail` need no extra font either. They use half-block characters, and some terminals, Cursor's among them, draw a thin seam in those.
 
 To use `round`:
 
@@ -115,7 +124,7 @@ Press Ctrl+O to see the full transcript, steps included. To show the steps in th
 
 ## Not checked yet
 
-- Checked only in Cursor's built-in terminal on macOS, with GPU drawing off and the full-screen chat view. Other terminals, GPU drawing on, Windows, Linux and the desktop app are not checked. Photos as real pixels are not checked in kitty or iTerm2.
+- Checked in Cursor's built-in terminal on macOS, with GPU drawing off and the full-screen chat view. In Ghostty 1.3.1 only a photo named by its path is checked, drawn as real pixels. Other terminals, GPU drawing on, Windows, Linux and the desktop app are not checked. Photos as real pixels are not checked in kitty or iTerm2, and `round` with Bubble Caps is not checked in Ghostty.
 - Claude's answer hooking onto a thread's line is checked in tests, not yet in a live chat.
 - `round` on the normal scrolling screen. There a saved `round` draws `block`.
 - Some messages keep Claude Code's own look: a message from outside the chat whose sender the mod cannot name, and a channel message that holds tags.
