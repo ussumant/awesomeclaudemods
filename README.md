@@ -12,7 +12,7 @@ Your Claude Code chat becomes a text thread:
 
 The steps Claude takes stay out of sight, so you read only the conversation.
 
-[![A Claude Code chat in the terminal drawn as an iMessage thread: the person sends a blue bubble, Claude tapbacks it with 🤔 and answers in a gray bubble, and holding Claude's reply opens the tapback bar, where a ♥ lands on it](pictures/chat-bubbles-demo.gif)](pictures/chat-bubbles-demo.mp4)
+[![A Claude Code chat in the terminal drawn as an iMessage thread: the person sends a blue bubble, a 🤔 tapback lands on it while Claude thinks and Claude answers in a gray bubble, and holding Claude's reply opens the tapback bar, where a ♥ lands on it](pictures/chat-bubbles-demo.gif)](pictures/chat-bubbles-demo.mp4)
 
 The clip shows the `round` style, which needs a small font. A new install starts with square `block` bubbles. See [Round bubbles need a small font](#round-bubbles-need-a-small-font).
 
@@ -130,6 +130,8 @@ Press Ctrl+O to see the full transcript, steps included. To show the steps in th
 - Some messages keep Claude Code's own look: a message from outside the chat whose sender the mod cannot name, and a channel message that holds tags.
 
 Known rough edges:
+
+- In current VS Code (1.147) with GPU drawing off, `round` bubbles cover the lower half of each bubble's last line of text. This was seen in VS Code's browser build with both 0.4.14 and 0.5.7. VS Code 1.128 draws them cleanly. Cursor has not been checked for this.
 
 - In `round`, a one-line message with non-Latin text or emoji draws two rows tall.
 - A line with some emoji, such as a check mark, can push the right edge of its bubble one cell out.
