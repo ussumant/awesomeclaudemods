@@ -67,6 +67,8 @@ The typing dots pulse in a wave.
 - Claude gets a `send_image` tool to send you a picture file from your Mac, with an optional caption.
 - Open under a photo shows the full-size file in Preview.
 
+![A picture named in a message, drawn in the chat as real pixels in Ghostty, with its file name and Open under it](pictures/photo-real-pixels-ghostty.png)
+
 In Ghostty, kitty and iTerm2 3.5 or later (iTerm2 in the full-screen view only), photos are real pixels: Claude Code draws pictures there, and the mod hands it a PNG up to 1000 px on its longest side. Everywhere else, Cursor, VS Code, Terminal.app and Warp among them, and inside tmux, photos are drawn in cells, two pixels to a cell. They show in any terminal that way, but look rough. Either way a photo takes up to 56 by 20 cells.
 
 The mod checks which terminal it is in when the chat starts. If it guesses pixels and Claude Code shows the photo's caption instead, the mod notices once and switches that chat to cells.
