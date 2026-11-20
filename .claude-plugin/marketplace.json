@@ -1,11 +1,13 @@
 {
-  "name": "awesomeclaudemods",
-  "owner": { "name": "ussumant" },
+  "name": "claude-imessage-mod",
+  "owner": {
+    "name": "ussumant"
+  },
   "plugins": [
     {
       "name": "chat-bubbles",
-      "source": "./chat-bubbles",
-      "description": "The terminal chat as a text thread: your messages in blue bubbles on the right, Claude's in gray on the left."
+      "source": "./",
+      "description": "The terminal chat as an iMessage thread: blue and gray bubbles, a typing bubble, hold a bubble to tapback or reply in a thread, Claude tapbacks you back, and pictures as photos."
     }
   ]
 }

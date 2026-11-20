@@ -1,7 +1,0 @@
-{
-  "name": "chat-bubbles",
-  "version": "0.4.14",
-  "license": "MIT",
-  "description": "The terminal transcript as an iMessage thread: blue bubbles for your prompts, gray for Claude's replies, an animated typing bubble while Claude works, clean tool rows hidden. /bubbles on|off, detail on|off, style pill|tail|block.",
-  "types": "./types/index.d.ts"
-}

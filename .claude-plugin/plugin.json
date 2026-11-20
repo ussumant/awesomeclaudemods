@@ -1,0 +1,7 @@
+{
+  "name": "chat-bubbles",
+  "version": "0.5.7",
+  "license": "MIT",
+  "description": "The terminal transcript as an iMessage thread: blue and gray bubbles, a typing bubble, hold a bubble to tapback, reply in a thread or copy it, and Claude tapbacks you back. /bubbles on|off, detail on|off, style block|pill|tail|round.",
+  "types": "./types/index.d.ts"
+}
