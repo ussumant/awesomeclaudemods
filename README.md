@@ -12,7 +12,7 @@ Your Claude Code chat becomes a text thread:
 
 The steps Claude takes stay out of sight, so you read only the conversation.
 
-[![A Claude Code chat in the terminal drawn as a text thread, with blue bubbles on the right for the person, gray bubbles on the left for Claude, a reply bubble that widens to hold a table, and Delivered under the newest message](pictures/chat-bubbles-demo.gif)](pictures/chat-bubbles-demo.mp4)
+[![A Claude Code chat in the terminal drawn as an iMessage thread: the person sends a blue bubble, Claude tapbacks it with 🤔 and answers in a gray bubble, and holding Claude's reply opens the tapback bar, where a ♥ lands on it](pictures/chat-bubbles-demo.gif)](pictures/chat-bubbles-demo.mp4)
 
 The clip shows the `round` style, which needs a small font. A new install starts with square `block` bubbles. See [Round bubbles need a small font](#round-bubbles-need-a-small-font).
 
