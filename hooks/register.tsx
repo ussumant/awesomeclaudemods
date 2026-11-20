@@ -3,6 +3,47 @@ import type { Elements, EngineInterface, Register, StateDollar } from 'claude-co
 
 import { capRows } from './cap'
 import type { CapProps } from './cap'
+import type { RoundFrame } from './hold'
+import {
+  BAR_OPEN_MS,
+  ITEM_CELLS,
+  REACT_DESCRIPTION,
+  REACT_TOOL,
+  REACT_TOOL_NAME,
+  TAPBACKS,
+  actionRow,
+  badgeGlyph,
+  barColors,
+  barHit,
+  barPlace,
+  capped,
+  contextLines,
+  isReaction,
+  statusOf,
+  replyingRow,
+  repliesRow,
+  snippetOf,
+  tapbackBar,
+  tapbackOf,
+} from './react'
+import type { BarPlace, Quoted, Reactions, Tapback } from './react'
+import {
+  BLOCK_GLYPHS,
+  FONT_GLYPHS,
+  PICTURE_EXT,
+  baseName,
+  PNG_MAX_BYTES,
+  PNG_SIDES,
+  fitSize,
+  parseBmp,
+  parseEnv,
+  pixelKind,
+  swapGlyphs,
+  toCells,
+  picturePaths,
+  withoutImageMarks,
+  withoutPaths,
+} from './picture'
 import { SHAPES, bubbleEdges, isShape } from './shape'
 import type { Shape, Side } from './shape'
 
@@ -23,6 +64,18 @@ type Palette = {
   deliveredSteps: readonly string[]
   // The one small line a failed or stopped tool call draws.
   failed: string
+  // Each fill at the end of a full press and hold: the sent blue a shade
+  // darker (white text keeps its contrast), the gray a shade toward the text.
+  pressSent: string
+  pressReceived: string
+  // Which tapback bar and badge colours (react.tsx barColors).
+  look: 'dark' | 'light' | 'other'
+  // A quoted message's faded copy above a threaded reply: Claude's gray and
+  // the person's blue, both a step toward the page, with dim text.
+  fadedReceived: string
+  fadedReceivedInk: string
+  fadedSent: string
+  fadedSentInk: string
 }
 // The grays are iMessage's #262629 and #E9E9EB with the blue channel levelled
 // (a change of 3, not visible). A level gray lands on the right step of a
@@ -39,6 +92,13 @@ const DARK: Palette = {
   dotBright: '#AEAEB2',
   deliveredSteps: ['#2C2C2E', '#48484A', '#636366'],
   failed: '#FF453A',
+  pressSent: '#005FC4',
+  pressReceived: '#3A3A3A',
+  look: 'dark',
+  fadedReceived: '#1C1C1C',
+  fadedReceivedInk: '#8E8E93',
+  fadedSent: '#0B3B70',
+  fadedSentInk: '#A9C4E6',
 }
 const LIGHT: Palette = {
   sent: SENT_BLUE,
@@ -47,8 +107,21 @@ const LIGHT: Palette = {
   dotBright: '#8E8E93',
   deliveredSteps: ['#E5E5EA', '#D1D1D6', '#C7C7CC'],
   failed: '#D70015',
+  pressSent: '#005FC4',
+  pressReceived: '#D4D4D4',
+  look: 'light',
+  fadedReceived: '#F2F2F2',
+  fadedReceivedInk: '#6C6C70',
+  fadedSent: '#D6E8FC',
+  fadedSentInk: '#2D5D93',
 }
-const FALLBACK: Palette = { ...DARK, received: 'userMessageBackground' }
+// The theme-key fill has no shade to ease to: it holds still while pressed.
+const FALLBACK: Palette = {
+  ...DARK,
+  received: 'userMessageBackground',
+  pressReceived: 'userMessageBackground',
+  look: 'other',
+}
 
 function paletteOf(theme: unknown): Palette {
   if (typeof theme !== 'string') return FALLBACK
@@ -167,6 +240,26 @@ const first = atom({ plugin: 'chat-bubbles', key: 'first' } as const, '')
 // Claude Code's `theme` row as last read: at session start, after a /config
 // change, and before each prompt (the /theme picker raises no config event).
 const theme = atom({ plugin: 'chat-bubbles', key: 'theme' } as const, '')
+
+// Tapbacks and threads (react.tsx says how they behave). Reactions by message
+// id; the bar open now; tapbacks on Claude's replies not yet told to Claude;
+// the message the next one replies to; each threaded reply's quote; the
+// newest message marked Read.
+const tapbacks = atom({ plugin: 'chat-bubbles', key: 'tapbacks' } as const, {})
+const openBar = atom({ plugin: 'chat-bubbles', key: 'openBar' } as const, null)
+const outbox = atom({ plugin: 'chat-bubbles', key: 'outbox' } as const, [])
+const replyTo = atom({ plugin: 'chat-bubbles', key: 'replyTo' } as const, null)
+const replies = atom({ plugin: 'chat-bubbles', key: 'replies' } as const, {})
+const readMark = atom({ plugin: 'chat-bubbles', key: 'readMark' } as const, null)
+// Claude's answers in a thread: each answer's id to the threaded reply it
+// answers.
+const threaded = atom({ plugin: 'chat-bubbles', key: 'threaded' } as const, {})
+// Pictures by the message (a prompt's id) or tool call (its tool_use_id) that
+// brought them: the person's pastes, the ones Claude looked at or sent.
+const pictures = atom({ plugin: 'chat-bubbles', key: 'pictures' } as const, {})
+// How this terminal draws real pixels (picture.ts, pixelKind), checked once a
+// session; null before the check.
+const pixels = atom({ plugin: 'chat-bubbles', key: 'pixels' } as const, null)
 
 type Table = Pick<Elements['terminal'], 'Box' | 'Text'>
 
@@ -525,6 +618,11 @@ function timeLabel(at: number, now: number): { day: string; time: string } {
       }
 }
 
+// `4:02 PM`: the clock of a time, as the time line prints it.
+function clockOf(at: number): string {
+  return timeLabel(at, at).time
+}
+
 // One bubble: its edge rows (per shape) around a filled body. Rows as wide as
 // the body sit on the side away from the tail; the tail row is one wider.
 function bubble(
@@ -767,6 +865,707 @@ function roundTyping(
   )
 }
 
+// ---- hold to react, threads (0.5) ------------------------------------------
+//
+// In full screen, a `block` or `round` bubble of the person's words or of
+// Claude's reply is drawn whole by hold.tsx, which feels a press and hold. The
+// rows around it come from here: the tapback bar (bar.tsx) or the badges
+// (badge.tsx) above it, the quote of the message it replies to, and the
+// actions (Reply, Copy) and "N Replies" under it. A Client that faults draws
+// the bubble as before, and Buttons in place of the animated bar.
+
+// What a drawn message needs once a Client posts about it, by id: kept from
+// its last draw (memory only; a reload redraws every row).
+type SeenMessage = { side: Side; text: string; place: BarPlace }
+const seenMessages = new Map<string, SeenMessage>()
+const SEEN_KEPT = 400
+
+function rememberMessage(id: string, message: SeenMessage) {
+  seenMessages.delete(id)
+  seenMessages.set(id, message)
+  if (seenMessages.size > SEEN_KEPT) seenMessages.delete(seenMessages.keys().next().value as string)
+}
+
+// How long the chosen tapback shows on the bar before the bar goes.
+const PICK_CLOSE_MS = 260
+// The most of a quoted message shown above a reply.
+const QUOTE_MAX = 40
+// A badge pops when it landed this recently; older ones are drawn settled.
+const FRESH_MS = 2_500
+
+// The longest message drawn by hold.tsx. A Client's props travel whole or not
+// at all (100,000 characters at most, then it draws nothing), so a very long
+// message keeps the bubble drawn here, without the hold.
+const HOLD_MAX_TEXT = 20_000
+
+// Whether this draw holds the whole bubble in hold.tsx.
+function canHold(shape: Shape, viewport: { isFullscreen?: boolean } | undefined, id: string, text: string): boolean {
+  return (
+    viewport?.isFullscreen === true &&
+    (shape === 'block' || shape === 'round') &&
+    id !== '' &&
+    text.length <= HOLD_MAX_TEXT &&
+    !hasFaulted(`hold:${id}`)
+  )
+}
+
+type HeldTable = Pick<Elements['terminal'], 'Box' | 'Client'>
+
+// A bubble drawn whole by hold.tsx: the same frame `roundBubble` or `bubble`
+// (block) draws, handed over as glyph strings and padding.
+function heldBubble(
+  { Box, Client }: HeldTable,
+  o: {
+    side: Side
+    shape: Shape
+    width: number
+    fill: string
+    pressFill: string
+    who: string
+    id: string
+    tail: boolean
+    text: string
+    isMarkdown: boolean
+    color?: string
+  },
+) {
+  const common = {
+    id: o.id,
+    who: o.who,
+    text: o.text,
+    isMarkdown: o.isMarkdown,
+    ...(o.color === undefined ? {} : { color: o.color }),
+    fill: o.fill,
+    pressFill: o.pressFill,
+  }
+  if (o.shape !== 'round') {
+    return (
+      <Box key={`shape-${o.who}`} flexDirection="column" width={o.width}>
+        <Client
+          key={`hold:${o.id}`}
+          module="./hold.tsx"
+          props={{ ...common, width: o.width, padX: PAD_X, padY: 1 }}
+        />
+      </Box>
+    )
+  }
+  const inner = Math.max(1, o.width - 4)
+  const receivedTail = o.tail && o.side === 'received'
+  const left: CapProps = { side: 'left', fill: o.fill, tail: receivedTail }
+  const right: CapProps = { side: 'right', fill: o.fill, tail: o.tail && o.side === 'sent' }
+  const caps = (p: CapProps): [string, string, string] => {
+    const [first = '', last = ''] = capRows(p, 2)
+
+    return [capRows(p, 1)[0] ?? '', first, last]
+  }
+  const { top, bottom } = padRows(o.side, inner, o.tail)
+  const round: RoundFrame = {
+    top,
+    bottom,
+    spacer: receivedTail,
+    oneLine: isOneRow(o.text, inner),
+    left: caps(left),
+    right: caps(right),
+  }
+
+  return (
+    <Box key={`shape-${o.who}`} flexDirection="column" width={o.width + (o.tail ? 1 : 0)}>
+      <Client key={`hold:${o.id}`} module="./hold.tsx" props={{ ...common, width: inner, padX: 0, padY: 0, round }} />
+    </Box>
+  )
+}
+
+// Cells a badge glyph takes, as badge.tsx counts them: the tapback words their
+// length; an emoji two; the rest (the tapback heart among them) one.
+function badgeCells(glyph: string): number {
+  if (/^[\x20-\x7e]+$/.test(glyph)) return glyph.length
+  const first = glyph.codePointAt(0) ?? 0
+  const wide = first >= 0x1f000 || (first >= 0x2300 && first <= 0x23ff) || (first >= 0x2600 && first <= 0x27bf && first !== 0x2665)
+
+  return wide ? 2 : 1
+}
+
+// A record without its undefined fields (state holds plain JSON).
+function defined<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T
+}
+
+// Closes the bar, if it is still the one opened at `at` (any, when absent).
+async function closeBar($: EngineInterface, at?: number) {
+  const bar = await read($, openBar)
+  if (bar === null || (at !== undefined && bar.at !== at)) return
+  await update($, openBar, () => null)
+}
+
+// Opens the bar over a message; it closes by itself after BAR_OPEN_MS.
+async function openBarOver($: EngineInterface, id: string) {
+  const at = await $.clock.now()
+  await update($, openBar, () => ({ id, at }))
+  $.clock.after(BAR_OPEN_MS, () => void closeBar($, at).catch(() => undefined))
+}
+
+// The person picks a tapback on a message: on, or off when it is the one
+// already there. A tapback on Claude's reply waits in the outbox for the next
+// message. The bar shows the pick for a moment, then goes.
+async function pickTapback($: EngineInterface, id: string, tapback: Tapback) {
+  const now = await $.clock.now()
+  let isOn = false
+  await update($, tapbacks, all => {
+    const current: Reactions = all[id] ?? {}
+    isOn = current.you !== tapback.key
+    const next = defined({ ...current, you: isOn ? tapback.key : undefined, youAt: isOn ? now : undefined })
+
+    return capped({ ...all, [id]: next })
+  })
+  const message = seenMessages.get(id)
+  if (message?.side === 'received') {
+    await update($, outbox, list => {
+      const rest = list.filter(s => s.id !== id)
+
+      return isOn ? [...rest, { id, word: tapback.word, snippet: snippetOf(message.text, 300) }].slice(-20) : rest
+    })
+  }
+  const bar = await read($, openBar)
+  if (bar?.id !== id) return
+  await update($, openBar, () => ({ ...bar, picked: tapback.key }))
+  $.clock.after(PICK_CLOSE_MS, () => void closeBar($, bar.at).catch(() => undefined))
+}
+
+async function replyToMessage($: EngineInterface, id: string, text: string, side: Side) {
+  await update($, replyTo, () => ({ id, who: side === 'received' ? 'Claude' : 'you', snippet: snippetOf(text, 600) }))
+  await closeBar($)
+}
+
+async function copyMessage($: EngineInterface, text: string) {
+  const copied = await $.ui.copy({ text, surface: 'terminal' }).catch(() => ({ isCopied: false as const }))
+  $.ui.toast(copied.isCopied ? 'Copied' : 'Could not copy that message')
+  await closeBar($)
+}
+
+type Around = { above: unknown[]; below: unknown[]; aboveRows: number; belowRows: number }
+const NO_AROUND: Around = { above: [], below: [], aboveRows: 0, belowRows: 0 }
+
+type AroundTable = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Client'>
+
+// The rows above and under a held bubble: the bar or its badges; the quote it
+// replies to; the actions while the bar is open; how many replies it has.
+async function aroundBubble(
+  $: EngineInterface,
+  t: AroundTable,
+  o: {
+    id: string
+    side: Side
+    shape: Shape
+    width: number
+    tail: boolean
+    text: string
+    fill: string
+    palette: Palette
+  },
+): Promise<Around> {
+  const { Box, Text, Client } = t
+  const [bar, all, threads] = await Promise.all([read($, openBar), read($, tapbacks), read($, replies)])
+  const reactions: Reactions = all[o.id] ?? {}
+  const colors = barColors(o.palette.look)
+  const tailCols = o.tail ? 1 : 0
+  const place = barPlace({ side: o.side, width: o.width })
+  rememberMessage(o.id, { side: o.side, text: o.text, place })
+  const above: unknown[] = []
+  const below: unknown[] = []
+  const align = o.side === 'received' ? 'flex-start' : 'flex-end'
+  const isOpen = bar?.id === o.id
+
+  if (isOpen && bar !== null) {
+    const pick = (tapback: Tapback) => void pickTapback($, o.id, tapback).catch(() => undefined)
+    above.push(
+      hasFaulted(`bar:${o.id}`) ? (
+        tapbackBar(t, { id: o.id, side: o.side, tailCols, current: bar.picked ?? reactions.you, colors, pick })
+      ) : (
+        <Box key={`bar-row:${o.id}`} width="100%" justifyContent={align} paddingRight={o.side === 'sent' ? tailCols : 0}>
+          <Client
+            key={`bar:${o.id}`}
+            module="./bar.tsx"
+            props={{
+              id: o.id,
+              items: TAPBACKS.map(({ key, glyph, color }) => (color === undefined ? { key, glyph } : { key, glyph, color })),
+              anchor: o.side === 'received' ? 'left' : 'right',
+              ...(reactions.you === undefined ? {} : { current: reactions.you }),
+              ...(bar.picked === undefined ? {} : { picked: bar.picked }),
+              bar: colors.bar,
+              from: o.fill,
+              ink: colors.ink,
+              chosen: colors.chosen,
+              cells: ITEM_CELLS,
+            }}
+          />
+        </Box>
+      ),
+    )
+  } else if (reactions.you !== undefined || reactions.claude !== undefined) {
+    const now = await $.clock.now().catch(() => 0)
+    // Claude's few words on what it is doing ride on its badge, shown when the
+    // pointer rests on it (badge.tsx).
+    const badge = (who: 'you' | 'claude', glyph: string, at: number | undefined, words?: string) => {
+      const bg = who === 'you' ? colors.chosen : colors.bar
+      const ink = who === 'you' ? WHITE : colors.ink
+      const key = `badge-${who}:${o.id}:${glyph}`
+
+      return hasFaulted(key) ? (
+        <Box key={key} paddingX={1} backgroundColor={bg}>
+          <Text color={ink} backgroundColor={bg} bold>{glyph}</Text>
+        </Box>
+      ) : (
+        <Client
+          key={key}
+          module="./badge.tsx"
+          props={{
+            glyph,
+            ink,
+            bg,
+            from: o.fill,
+            animate: at !== undefined && now - at < FRESH_MS,
+            round: o.shape === 'round',
+            ...(words === undefined ? {} : { words, wordsInk: SMALL }),
+          }}
+        />
+      )
+    }
+    const mine = tapbackOf(reactions.you)
+    const theirs = reactions.claude !== undefined ? badgeGlyph(reactions.claude) : undefined
+    const words = o.side === 'sent' ? reactions.status : undefined
+    // The badges' own width: a round one is its glyph (at least two cells)
+    // plus its caps, a block one its glyph plus padding; one cell between two.
+    const own = (glyph: string) => (o.shape === 'round' ? Math.max(2, badgeCells(glyph)) + 4 : badgeCells(glyph) + 2)
+    const widths = (theirs !== undefined ? own(theirs) : 0) + (mine !== undefined ? own(mine.glyph) : 0) + (theirs !== undefined && mine !== undefined ? 1 : 0)
+    above.push(
+      o.side === 'sent' ? (
+        // On the person's bubble the badges sit at its top-left corner, and the
+        // words slide out to their left: anchored by a spacer the rest of the
+        // bubble's width, so the badges never move.
+        <Box key={`badges:${o.id}`} width="100%" flexDirection="row" justifyContent="flex-end" paddingRight={tailCols}>
+          {theirs !== undefined && badge('claude', theirs, reactions.claudeAt, words)}
+          {theirs !== undefined && mine !== undefined && <Text>{' '}</Text>}
+          {mine !== undefined && badge('you', mine.glyph, reactions.youAt)}
+          <Box key="badge-spacer" width={Math.max(0, o.width - widths)} />
+        </Box>
+      ) : (
+        <Box key={`badges:${o.id}`} width="100%" justifyContent={align}>
+          <Box width={o.width} flexDirection="row" justifyContent="flex-end">
+            {theirs !== undefined && badge('claude', theirs, reactions.claudeAt)}
+            {theirs !== undefined && mine !== undefined && <Text>{' '}</Text>}
+            {mine !== undefined && badge('you', mine.glyph, reactions.youAt)}
+          </Box>
+        </Box>
+      ),
+    )
+  }
+
+  if (isOpen) {
+    below.push(
+      actionRow(t, {
+        id: o.id,
+        side: o.side,
+        tailCols,
+        colors,
+        reply: () => void replyToMessage($, o.id, o.text, o.side).catch(() => undefined),
+        copy: () => void copyMessage($, o.text).catch(() => undefined),
+      }),
+    )
+  }
+  const count = Object.values(threads).filter(q => q.id === o.id).length
+  if (count > 0) below.push(repliesRow(t, { id: o.id, side: o.side, tailCols, count, small: SMALL }))
+
+  // Rows each takes: the bar one, a round badge three (its pad rows), a block
+  // badge one; each line under the bubble one.
+  const badgeRows = o.shape === 'round' ? 3 : 1
+  const aboveRows = isOpen ? 1 : above.length > 0 ? badgeRows : 0
+
+  return { above, below, aboveRows, belowRows: below.length }
+}
+
+// ---- pictures (0.5) ----------------------------------------------------------
+//
+// A picture in the thread is a photo bubble: the picture drawn in cells
+// (picture.ts), its name under it and an Open button that shows the file in
+// Preview. Three ways one arrives: the person pastes one (prompt.submit hands
+// its bytes), Claude reads a picture file (the Read tool), or Claude sends one
+// (its `send_image` tool). `sips` (on every Mac) makes the small BMP the cells
+// come from; the files live in PICTURE_DIR.
+
+// `written`: the path as the message wrote it, when the picture came from a path
+// in the person's words (taken out of the bubble's text).
+// `png`: a preview PNG for terminals that draw real pixels.
+type Picture = {
+  file: string
+  name: string
+  cols: number
+  rows: number
+  cells: string
+  glyph: 'font' | 'block'
+  written?: string
+  png?: string
+}
+
+const PICTURE_DIR = '/tmp/chat-bubbles-pictures'
+const PICTURE_MAX_COLS = 56
+const PICTURE_MAX_ROWS = 20
+const PICTURES_KEPT = 40
+const SEND_IMAGE_TOOL = 'send_image'
+const SEND_IMAGE_TOOL_NAME = 'mcp__chat-bubbles__send_image'
+const SEND_IMAGE_DESCRIPTION = [
+  'Send the user a picture in the chat, the way you would text someone a photo: a screenshot you took, a chart or image you made, a design to look at. It shows as a photo bubble with an Open button for the full size.',
+  'Pass an absolute path to a picture file (png, jpg, gif, webp, heic) and, if it helps, a short caption.',
+].join('\n')
+
+// Pictures from any source, kept with the message or call they came with.
+async function keepPictures($: EngineInterface, id: string, list: Picture[]) {
+  if (list.length === 0) return
+  await update($, pictures, all => {
+    const next = { ...all, [id]: list }
+    const keys = Object.keys(next)
+
+    return keys.length <= PICTURES_KEPT ? next : Object.fromEntries(keys.slice(-PICTURES_KEPT).map(k => [k, next[k]!]))
+  })
+}
+
+// A picture file as cells, or undefined when it can't be read.
+async function makePicture($: EngineInterface, file: string, round: boolean): Promise<Picture | undefined> {
+  const dims = await $.process.run(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', file])
+  const width = Number(/pixelWidth:\s*(\d+)/.exec(dims.stdout)?.[1] ?? NaN)
+  const height = Number(/pixelHeight:\s*(\d+)/.exec(dims.stdout)?.[1] ?? NaN)
+  if (dims.exitCode !== 0 || !(width > 0) || !(height > 0)) return undefined
+  const { w, h } = fitSize(width, height, PICTURE_MAX_COLS, PICTURE_MAX_ROWS)
+  await $.process.run(['mkdir', '-p', PICTURE_DIR])
+  const out = `${PICTURE_DIR}/thumb-${await $.clock.now()}-${w}x${h}.bmp`
+  const made = await $.process.run(['sips', '-s', 'format', 'bmp', '-z', String(h), String(w), file, '--out', out])
+  if (made.exitCode !== 0) return undefined
+  const read = (await $.fs.read(out, { as: 'bytes' })) as unknown as { base64?: string }
+  if (typeof read.base64 !== 'string') return undefined
+  const fromB64 = (Uint8Array as unknown as { fromBase64?: (s: string) => Uint8Array }).fromBase64
+  const bytes = typeof fromB64 === 'function' ? fromB64(read.base64) : Uint8Array.from(atob(read.base64), ch => ch.charCodeAt(0))
+  const px = parseBmp(bytes)
+  if (px === undefined) return undefined
+  const matte = paletteOf(await themeOf($)).look === 'light' ? 0xffffff : 0x000000
+  const cells = toCells(px, { glyphs: round ? FONT_GLYPHS : BLOCK_GLYPHS, matte })
+  const png = await makePreview($, file, out.replace(/\.bmp$/, '')).catch(() => undefined)
+
+  return { file, name: baseName(file), ...cells, glyph: round ? 'font' : 'block', ...(png === undefined ? {} : { png }) }
+}
+
+// A PNG of the picture small enough for the Image element (PNG_MAX_BYTES),
+// its longest side the first of PNG_SIDES that fits; undefined if none does.
+async function makePreview($: EngineInterface, file: string, stem: string): Promise<string | undefined> {
+  for (const side of PNG_SIDES) {
+    const out = `${stem}-${side}.png`
+    const made = await $.process.run(['sips', '-s', 'format', 'png', '-Z', String(side), file, '--out', out])
+    if (made.exitCode !== 0) return undefined
+    const size = await $.process.run(['stat', '-f', '%z', out])
+    if (size.exitCode === 0 && Number(size.stdout.trim()) <= PNG_MAX_BYTES) return out
+  }
+
+  return undefined
+}
+
+// Reads which way this terminal draws pixels, once a session (its environment
+// is fixed for the session's life).
+async function checkPixels($: EngineInterface) {
+  if ((await read($, pixels)) !== null) return
+  const env = await $.process.run(['/usr/bin/env']).catch(() => undefined)
+  const kind = env === undefined || env.exitCode !== 0 ? undefined : pixelKind(parseEnv(env.stdout))
+  await update($, pixels, () => kind ?? 'no')
+}
+
+// Preview bytes (base64) by path, the last few read. Kept out of `$.state`,
+// where a megabyte a picture would weigh on every write; a reload reads the
+// files again.
+const PNG_CACHED = 12
+const pngBytes = new Map<string, string>()
+
+async function pngOf($: EngineInterface, path: string): Promise<string | undefined> {
+  const had = pngBytes.get(path)
+  if (had !== undefined) {
+    pngBytes.delete(path)
+    pngBytes.set(path, had)
+
+    return had
+  }
+  const got = (await $.fs.read(path, { as: 'bytes' }).catch(() => undefined)) as unknown as { base64?: string } | undefined
+  if (typeof got?.base64 !== 'string') return undefined
+  pngBytes.set(path, got.base64)
+  while (pngBytes.size > PNG_CACHED) pngBytes.delete(pngBytes.keys().next().value as string)
+
+  return got.base64
+}
+
+// Each picture's PNG bytes where this terminal draws pixels here (iTerm2 only
+// in full screen), else undefined: drawn in cells.
+async function pixelSources(
+  $: EngineInterface,
+  list: readonly Picture[],
+  viewport: { isFullscreen?: boolean } | undefined,
+): Promise<(string | undefined)[]> {
+  const kind = await read($, pixels)
+  const can = kind === 'kitty' || (kind === 'iterm' && viewport?.isFullscreen === true)
+  if (!can) return list.map(() => undefined)
+
+  return Promise.all(list.map(pic => (pic.png === undefined ? undefined : pngOf($, pic.png))))
+}
+
+// A wrong guess put right: once a session, after the first photo drawn in
+// pixels, ask the engine to swap it for itself. If the Image is showing its
+// alt there, the engine says so, and photos go back to cells.
+let pixelsProbed = false
+
+function probePixels($: EngineInterface, requestId: string, key: string, png: string) {
+  if (pixelsProbed) return
+  pixelsProbed = true
+  $.clock.after(PIXEL_PROBE_MS, () => {
+    void $.ui
+      .blit({ requestId, key, source: { png } })
+      .then(async result => {
+        if (result.deny !== undefined && /draws its alt/.test(result.deny)) await update($, pixels, () => 'no')
+        else if (result.deny !== undefined) pixelsProbed = false // not mounted yet: try on the next photo
+      })
+      .catch(() => {
+        pixelsProbed = false
+      })
+  })
+}
+
+const PIXEL_PROBE_MS = 400
+
+// A pasted picture's bytes, written to a file of its own.
+async function savePaste($: EngineInterface, id: string, mediaType: string | undefined, index: number): Promise<string | undefined> {
+  let base64 = ''
+  let offset: number | undefined
+  for (let slice = 0; slice < 64; slice += 1) {
+    const media = await $.prompt.media(offset === undefined ? { id } : { id, offset })
+    if (typeof media.base64 !== 'string') return undefined
+    base64 += media.base64
+    if (media.next === undefined) break
+    offset = media.next
+  }
+  const ext = /png/.test(mediaType ?? '') ? 'png' : /gif/.test(mediaType ?? '') ? 'gif' : /webp/.test(mediaType ?? '') ? 'webp' : 'jpg'
+  await $.process.run(['mkdir', '-p', PICTURE_DIR])
+  const file = `${PICTURE_DIR}/paste-${await $.clock.now()}-${index}.${ext}`
+  const wrote = await $.process.run(['base64', '-D', '-o', file], { stdin: base64 })
+
+  return wrote.exitCode === 0 ? file : undefined
+}
+
+// Pictures pasted with the prompt in flight, filed under its id once stored.
+let pendingPictures: Picture[] = []
+
+type PictureTable = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Raster' | 'Image'>
+
+// Photo bubbles, one under another, on the side of whoever sent them: real
+// pixels where `sources` holds the picture's PNG bytes (pixelSources), cells
+// otherwise, in a box of the same size either way. `requestId` is the drawing's
+// site, for the one check that the pixels really show (probePixels).
+function photoRows(
+  { Box, Text, Button, Raster, Image }: PictureTable,
+  $: EngineInterface,
+  o: {
+    id: string
+    requestId: string
+    list: Picture[]
+    sources: readonly (string | undefined)[]
+    side: Side
+    round: boolean
+    tailCols: number
+    caption?: string
+  },
+) {
+  const want = o.round ? FONT_GLYPHS : BLOCK_GLYPHS
+
+  return (
+    <Box
+      key={`photos:${o.id}`}
+      width="100%"
+      flexDirection="column"
+      alignItems={o.side === 'sent' ? 'flex-end' : 'flex-start'}
+      paddingRight={o.side === 'sent' ? o.tailCols : 0}
+    >
+      {o.list.map((pic, i) => {
+        const had = pic.glyph === 'font' ? FONT_GLYPHS : BLOCK_GLYPHS
+        const open = () => void $.process.run(['open', pic.file]).catch(() => undefined)
+        const png = o.sources[i]
+        const key = `pic:${o.id}:${i}`
+        if (png !== undefined) probePixels($, o.requestId, key, png)
+        const caption = o.caption ?? pic.name
+
+        return (
+          <Box key={`photo:${o.id}:${i}`} flexDirection="column" alignItems={o.side === 'sent' ? 'flex-end' : 'flex-start'}>
+            {png !== undefined ? (
+              <Image key={key} source={{ png }} columns={pic.cols} rows={pic.rows} alt={`[photo: ${caption}]`} />
+            ) : (
+              <Raster key={key} columns={pic.cols} rows={pic.rows} cells={swapGlyphs(pic.cells, had, want)} />
+            )}
+            <Box flexDirection="row">
+              <Text color={SMALL}>{`${caption}  `}</Text>
+              <Button key={`open:${o.id}:${i}`} plain dimColor onPress={open}>Open</Button>
+            </Box>
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
+// ---- threads: the reply joined to what it quotes --------------------------
+//
+// A threaded reply draws, at the bottom of the chat where it was sent: a faded
+// one-line copy of the message it replies to, then a line from under that copy
+// that runs down beside the reply and turns into it. Claude's answers to that
+// reply hook onto the same line, indented under it. Off full screen and with
+// the hold off the same shapes draw; nothing here needs a Client.
+
+const RAIL = '  │'
+const RAIL_WIDTH = 4 // the rail's column beside one of Claude's answers
+
+// Rows a plain-text bubble takes: each line wrapped at the inside width, plus
+// the round pad rows or the block's padding rows. An estimate (words wrap a
+// little earlier than cells do); it only sizes the line beside the bubble.
+function plainRows(text: string, shape: Shape, width: number): number {
+  const inner = Math.max(1, shape === 'round' ? width - 4 : width - 2 * PAD_X)
+  const lines = text.split('\n').reduce((sum, line) => sum + Math.max(1, Math.ceil(lineCells(line) / inner)), 0)
+
+  return lines + (shape === 'round' || shape === 'block' ? 2 : 0)
+}
+
+// The faded copy of a quoted message: one line in a small bubble, on the side
+// of whoever wrote it.
+function fadedQuote(
+  { Box, Text }: Pick<Elements['terminal'], 'Box' | 'Text'>,
+  o: { quoted: Quoted; shape: Shape; palette: Palette; tail: boolean },
+) {
+  const isClaude = o.quoted.who === 'Claude'
+  const words = snippetOf(o.quoted.snippet, QUOTE_MAX)
+  const fill = isClaude ? o.palette.fadedReceived : o.palette.fadedSent
+  const ink = isClaude ? o.palette.fadedReceivedInk : o.palette.fadedSentInk
+  const side: Side = isClaude ? 'received' : 'sent'
+  const width = lineCells(words) + 2 * PAD_X
+  const body = <Text color={ink} backgroundColor={fill}>{words}</Text>
+
+  return (
+    <Box key={`quote:${o.quoted.id}`} width="100%" flexDirection="column" alignItems={isClaude ? 'flex-start' : 'flex-end'}>
+      {o.shape === 'round'
+        ? roundBubble({ Box, Text }, { side, width, fill, who: 'quote', id: o.quoted.id, tail: false, text: words, children: body })
+        : (
+          <Box key="bubble-quote" paddingX={PAD_X} backgroundColor={fill}>
+            {body}
+          </Box>
+        )}
+    </Box>
+  )
+}
+
+// The line beside a threaded reply (the person's, on the right): down through
+// the rows above the bubble, then at the bubble's first text row it turns and
+// runs across into the bubble, then on down past the rows under it, so
+// Claude's answer can hook on below.
+function replyRail(
+  { Box, Text }: Pick<Elements['terminal'], 'Box' | 'Text'>,
+  o: { aboveRows: number; bubbleRows: number; belowRows: number; columns: number },
+) {
+  const rows: unknown[] = []
+  for (let i = 0; i < o.aboveRows + 1; i += 1) rows.push(<Text key={`rail-a${i}`} color={SMALL}>{RAIL}</Text>)
+  rows.push(
+    <Box key="rail-turn" flexDirection="row">
+      <Text color={SMALL}>{'  ├'}</Text>
+      <Box flexGrow={1} width={0} overflow="hidden">
+        <Text color={SMALL} wrap="clip">{'─'.repeat(o.columns)}</Text>
+      </Box>
+    </Box>,
+  )
+  for (let i = 2; i < o.bubbleRows + o.belowRows; i += 1) rows.push(<Text key={`rail-b${i}`} color={SMALL}>{RAIL}</Text>)
+
+  return (
+    <Box key="reply-rail" flexDirection="column" flexGrow={1} width={0}>
+      {rows as never}
+    </Box>
+  )
+}
+
+// The line beside one of Claude's answers in a thread: down through the rows
+// above the bubble and its top row, then a hook into the bubble's first text
+// row.
+function answerRail({ Text, Box }: Pick<Elements['terminal'], 'Box' | 'Text'>, aboveRows: number) {
+  const rows: unknown[] = []
+  for (let i = 0; i < aboveRows + 1; i += 1) rows.push(<Text key={`rail-a${i}`} color={SMALL}>{RAIL}</Text>)
+  rows.push(<Text key="rail-hook" color={SMALL}>{'  ╰─'}</Text>)
+
+  return (
+    <Box key="answer-rail" flexDirection="column" width={RAIL_WIDTH} flexShrink={0}>
+      {rows as never}
+    </Box>
+  )
+}
+
+// Claude's tapback on the person's newest message (the `react` tool).
+async function claudeReacts($: EngineInterface, emoji: string, status?: string): Promise<string | undefined> {
+  const list = await read($, prompts)
+  const newest = list[list.length - 1]
+  if (newest === undefined) return undefined
+  const now = await $.clock.now()
+  await update($, tapbacks, all =>
+    capped({ ...all, [newest.uuid]: defined({ ...(all[newest.uuid] ?? {}), claude: emoji, claudeAt: now, status }) }),
+  )
+  await markRead($)
+
+  return newest.uuid
+}
+
+// The person's newest message as read: Claude has started on it.
+async function markRead($: EngineInterface) {
+  const newest = (await read($, prompts)).at(-1)
+  if (newest === undefined) return
+  const mark = await read($, readMark)
+  if (mark?.uuid === newest.uuid) return
+  const at = await $.clock.now()
+  await update($, readMark, () => ({ uuid: newest.uuid, at }))
+}
+
+// ---- the thinking fallback --------------------------------------------------
+//
+// Claude is asked (its react tool's description) to react first whenever its
+// answer is not instant, with an emoji for the kind of work. If it has not
+// reacted to the person's newest message THINK_AFTER_MS after they sent it and
+// the turn is still running, the mod puts 🤔 there itself, so a long think
+// never leaves them wondering. Claude's own reaction replaces it.
+
+const THINK_AFTER_MS = 4_000
+const THINK_EMOJI = '🤔'
+
+// When the person's prompt that started the running turn was sent; undefined
+// once the turn has ended.
+let waitingSince: number | undefined
+
+async function armThinking($: EngineInterface) {
+  const since = await $.clock.now()
+  waitingSince = since
+  $.clock.after(THINK_AFTER_MS, () => void thinkingFallback($, since).catch(() => undefined))
+}
+
+async function thinkingFallback($: EngineInterface, since: number) {
+  if (waitingSince !== since) return
+  const newest = (await read($, prompts)).at(-1)
+  if (newest === undefined || newest.at < since - 1_000) return
+  const reactions: Reactions = (await read($, tapbacks))[newest.uuid] ?? {}
+  if (reactions.claudeAt !== undefined && reactions.claudeAt >= since) return
+  const now = await $.clock.now()
+  await update($, tapbacks, all =>
+    capped({
+      ...all,
+      [newest.uuid]: defined({ ...(all[newest.uuid] ?? {}), claude: THINK_EMOJI, claudeAt: now, status: 'thinking it through' }),
+    }),
+  )
+}
+
+// A reply waiting for its stored id: set at prompt.submit, filed under the
+// prompt's id at session.append.
+let pendingReply: Quoted | undefined
+
 // What "only the conversation" hides: clean tool rows and their progress pill,
 // the turn's closing line ("Baked for 3s"), and the dim notice under the logo.
 // Shown again with `/bubbles detail on`, with the mod off, off the terminal,
@@ -990,8 +1789,174 @@ export const register: Register = on => {
     await startRead($).catch(() => undefined)
     forgetAllFaults() // a new session tries every Client again
     await refreshTheme($)
+    await checkPixels($).catch(() => undefined)
+    // Claude's tapback, in the prompt's tool list from the first turn.
+    await $.tool
+      .register({
+        name: REACT_TOOL,
+        description: REACT_DESCRIPTION,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            emoji: { type: 'string', description: 'One emoji (or one of HA, !!, ?).' },
+            status: {
+              type: 'string',
+              description: 'Exactly what you are doing, a few plain words naming the thing: "reading register.tsx".',
+            },
+          },
+          required: ['emoji'],
+        },
+        isDeferred: false,
+      })
+      .catch(() => undefined)
+    await $.tool
+      .register({
+        name: SEND_IMAGE_TOOL,
+        description: SEND_IMAGE_DESCRIPTION,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Absolute path to the picture file.' },
+            caption: { type: 'string', description: 'A few words under the picture (optional).' },
+          },
+          required: ['path'],
+        },
+        isDeferred: false,
+      })
+      .catch(() => undefined)
 
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Claude sends the person a picture: it shows as a photo bubble (ToolUse).
+  on('tool.call', { tool: SEND_IMAGE_TOOL_NAME }, async ($, e) => {
+    const flat = e as unknown as { path?: unknown; caption?: unknown; tool_use_id?: string }
+    const path = typeof flat.path === 'string' ? flat.path.trim() : ''
+    if (!path.startsWith('/') || !PICTURE_EXT.test(path)) {
+      return { deny: 'Pass an absolute path to a png, jpg, gif, webp or heic file.' }
+    }
+    const pic = await makePicture($, path, (await prefsOf($)).shape === 'round').catch(() => undefined)
+    if (pic === undefined) return { deny: `Could not open ${path} as a picture.` }
+    const caption = typeof flat.caption === 'string' ? shortName(flat.caption) : ''
+    if (flat.tool_use_id !== undefined) await keepPictures($, flat.tool_use_id, [caption === '' ? pic : { ...pic, name: caption }])
+
+    return { result: `Sent ${baseName(path)} to the chat as a photo.` }
+  }).catch(() => ({ deny: 'chat-bubbles: the picture did not send.' }))
+
+  // Claude looks at a picture file: the thread shows the picture it looked at.
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    const result = await next(e)
+    try {
+      const flat = e as unknown as { file_path?: unknown; tool_use_id?: string; agentId?: string }
+      const path = typeof flat.file_path === 'string' ? flat.file_path : ''
+      if (flat.agentId === undefined && flat.tool_use_id !== undefined && PICTURE_EXT.test(path)) {
+        const pic = await makePicture($, path, (await prefsOf($)).shape === 'round')
+        if (pic !== undefined) await keepPictures($, flat.tool_use_id, [pic])
+      }
+    } catch {
+      // The read stands; only its photo is missing.
+    }
+
+    return result
+  }).catch(($, e, next) => next(e))
+
+  // Claude reacts to the person's newest message. Answered here, so no
+  // permission prompt: it only draws a badge.
+  on('tool.call', { tool: REACT_TOOL_NAME }, async ($, e) => {
+    // A tool's arguments arrive as the event's own fields (as open-decisions reads
+    // them); `input.emoji` is read too, in case a build nests them.
+    const flat = e as unknown as { emoji?: unknown; status?: unknown; input?: { emoji?: unknown; status?: unknown } }
+    const emoji = flat.emoji ?? flat.input?.emoji
+    if (!isReaction(emoji)) {
+      return { deny: 'Send one emoji (or HA, !!, ?), no words.' }
+    }
+    const status = statusOf(flat.status ?? flat.input?.status)
+    const uuid = await claudeReacts($, emoji.trim(), status)
+    if (uuid === undefined) return { deny: 'There is no message of theirs to react to yet.' }
+
+    return {
+      result: `Reacted ${emoji.trim()}${status === undefined ? '' : ` ("${status}")`} to their newest message. Now answer it.`,
+    }
+  }).catch(() => ({ deny: 'chat-bubbles: the reaction did not take.' }))
+
+  // Only the main conversation reacts: a subagent or teammate never sees the
+  // tool (it would tapback the person's message on every turn it starts).
+  on('tool.offer', { tool: REACT_TOOL_NAME }, async ($, e, next) =>
+    e.agentId !== undefined ? { isOffered: false } : next(e),
+  ).catch(($, e, next) => next(e))
+
+  // A bubble or the tapback bar posted: a hold opened the bar, a release slid
+  // onto a tapback, a click picked one, a quick tap closes an open bar.
+  on('ui.message', async ($, e, next) => {
+    // Posted by this mod's own Clients (HoldPost, BarPost), read loosely.
+    const data = e.data as { type?: unknown; id?: unknown; x?: unknown; y?: unknown; key?: unknown } | null
+    const id = typeof data?.id === 'string' ? data.id : undefined
+    if (id === undefined) return next(e)
+    if (e.module.endsWith('hold.tsx')) {
+      if (data?.type === 'hold') {
+        await openBarOver($, id)
+      } else if (data?.type === 'release') {
+        const message = seenMessages.get(id)
+        const hit = message !== undefined && typeof data.x === 'number' && typeof data.y === 'number'
+          ? barHit(message.place, data.x, data.y)
+          : undefined
+        if (hit !== undefined) await pickTapback($, id, hit)
+      } else if (data?.type === 'tap') {
+        await closeBar($)
+      }
+    } else if (e.module.endsWith('bar.tsx') && data?.type === 'pick') {
+      const tapback = tapbackOf(typeof data.key === 'string' ? data.key : undefined)
+      if (tapback !== undefined) await pickTapback($, id, tapback)
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // The "Replying to" row above the prompt, while a reply is being written.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.surface !== 'terminal') return next(e)
+    const quoted = await read($, replyTo)
+    if (quoted === null) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+
+    return replyingRow(
+      { Box, Text, Button },
+      {
+        quoted: { ...quoted, who: quoted.who === 'Claude' ? 'Claude' : 'yourself' },
+        small: SMALL,
+        cancel: () => void update($, replyTo, () => null).catch(() => undefined),
+      },
+    )
+  }).catch(($, e, next) => next(e))
+
+  // Claude's reply is being stored: the person's newest message is read.
+  // The main conversation's turn ended: no thinking fallback for it now.
+  // The main conversation's turn ended: no thinking fallback for it now.
+  on('turn.complete', async ($, e, next) => {
+    if ((e as { agentId?: string }).agentId === undefined) {
+      waitingSince = undefined
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // An answer to a threaded reply joins its thread.
+  on('session.append', { door: 'response' }, async ($, e, next) => {
+    const stored = await next(e)
+    if (e.agentId === undefined) {
+      await markRead($).catch(() => undefined)
+      try {
+        const newest = (await read($, prompts)).at(-1)
+        const uuid = stored.uuid
+        if (newest !== undefined && uuid !== undefined && (await read($, replies))[newest.uuid] !== undefined) {
+          await update($, threaded, all => capped({ ...all, [uuid]: newest.uuid }))
+        }
+      } catch {
+        // An answer left out of its thread only loses the line beside it.
+      }
+    }
+
+    return stored
   }).catch(($, e, next) => next(e))
 
   // The theme row changed in /config (or by a plugin's $.config.set).
@@ -1010,8 +1975,42 @@ export const register: Register = on => {
     // say) are forgotten and every piece tries its Client again.
     const now = await $.clock.now().catch(() => Number.NaN)
     if (recoverFaults(now)) await redraw($)
+    await closeBar($).catch(() => undefined)
+    if (e.command !== undefined || e.isMeta === true) return next(e)
+    await armThinking($).catch(() => undefined)
+    // Pasted pictures: saved and drawn now, filed under the prompt's id once
+    // it is stored (session.append).
+    pendingPictures = []
+    const shots = (e.attachments ?? []).filter(a => a.type === 'image' && typeof a.id === 'string')
+    const named = picturePaths(e.text)
+    if (shots.length > 0 || named.length > 0) {
+      try {
+        const round = (await prefsOf($)).shape === 'round'
+        for (const [i, shot] of shots.entries()) {
+          const file = await savePaste($, shot.id as string, shot.mediaType, i)
+          const pic = file === undefined ? undefined : await makePicture($, file, round)
+          if (pic !== undefined) pendingPictures.push(pic)
+        }
+        // A picture named by its path (dragged in from Finder, say).
+        for (const { path, written } of named) {
+          const pic = await makePicture($, path, round).catch(() => undefined)
+          if (pic !== undefined) pendingPictures.push({ ...pic, written })
+        }
+      } catch {
+        // A picture that can't be drawn leaves the prompt as it was.
+      }
+    }
 
-    return next(e)
+    // The person's tapbacks on Claude's replies since the last message, and the
+    // message this one replies to, go to Claude beside it.
+    const [sent, quoted] = await Promise.all([read($, outbox), read($, replyTo)])
+    if (sent.length === 0 && quoted === null) return next(e)
+    const lines = contextLines(sent, quoted)
+    pendingReply = quoted ?? undefined
+    await update($, outbox, () => [])
+    await update($, replyTo, () => null)
+
+    return next({ ...e, context: [...(e.context ?? []), ...lines] })
   }).catch(($, e, next) => next(e))
 
   // A Client of this mod failed (did not load, failed to draw, or overran its
@@ -1051,6 +2050,12 @@ export const register: Register = on => {
         const at = await $.clock.now()
         await update($, prompts, list => [...list, { uuid, at }].slice(-500))
         await update($, first, id => (id === '' ? uuid : id))
+        const quoted = pendingReply
+        pendingReply = undefined
+        if (quoted !== undefined) await update($, replies, all => capped({ ...all, [uuid]: quoted }))
+        const pasted = pendingPictures
+        pendingPictures = []
+        await keepPictures($, uuid, pasted)
       }
     } catch {
       // A missing stamp only costs that row its time line.
@@ -1223,8 +2228,15 @@ export const register: Register = on => {
       // centred gray line naming where it came from, never the raw text.
       return grayLine
     }
+    // Pasted pictures draw as photos above the words; the "[Image #1]" marks
+    // they leave in the text go, and a paste with no words is the photos alone.
+    const pasted = (await read($, pictures))[e.requestId] ?? []
+    const words =
+      pasted.length > 0
+        ? withoutPaths(withoutImageMarks(text), pasted.flatMap(p => (p.written === undefined ? [] : [p.written])))
+        : text
     const columns = e.viewport?.columns ?? FALLBACK_COLUMNS
-    const width = Math.min(longestLine(text) + 2 * PAD_X, narrowCap(columns, SENT_SHARE))
+    const width = Math.min(longestLine(words) + 2 * PAD_X, narrowCap(columns, SENT_SHARE))
     const list = await read($, prompts)
     const isFirst = e.requestId !== '' && e.requestId === (await read($, first))
     const index = list.findIndex(p => p.uuid === e.requestId)
@@ -1245,8 +2257,94 @@ export const register: Register = on => {
     const bubbleShape = shape
     const roundShape = bubbleShape === 'round'
     const hasTail = roundShape ? prefs.tail : bubbleEdges(bubbleShape, width, 'sent').tailAt === 'right'
-    const { Client } = $.ui.resolve(e) // Delivered fades in from its own module
-    const body = <Text color={WHITE} backgroundColor={sent}>{text}</Text>
+    const { Client, Button } = $.ui.resolve(e) // Delivered fades in from its own module
+    const body = <Text color={WHITE} backgroundColor={sent}>{words}</Text>
+    const held = canHold(bubbleShape, e.viewport, e.requestId, words)
+    const around = held
+      ? await aroundBubble($, { Box, Text, Button, Client }, {
+          id: e.requestId,
+          side: 'sent',
+          shape: bubbleShape,
+          width,
+          tail: hasTail,
+          text: words,
+          fill: sent,
+          palette,
+        })
+      : NO_AROUND
+    const mark = showDelivered ? await read($, readMark) : null
+    const readLine = mark !== null && mark.uuid === e.requestId ? `Read ${clockOf(mark.at)}` : undefined
+
+    const bubbleEl = held
+          ? heldBubble({ Box, Client }, {
+              side: 'sent',
+              shape: bubbleShape,
+              width,
+              fill: sent,
+              pressFill: palette.pressSent,
+              who: 'user',
+              id: e.requestId,
+              tail: hasTail,
+              text: words,
+              isMarkdown: false,
+              color: WHITE,
+            })
+          : roundShape
+          ? roundBubble({ Box, Text }, {
+              side: 'sent',
+              width,
+              fill: sent,
+              who: 'user',
+              id: e.requestId,
+              tail: prefs.tail,
+              text: words,
+              children: body,
+            })
+          : bubble({ Box, Text }, {
+              shape: bubbleShape,
+              side: 'sent',
+              width,
+              fill: sent,
+              who: 'user',
+              children: body,
+            })
+    // Lined up with the bubble's right edge, not its tail. The plain
+    // word in its final colour once its fade-in Client has faulted.
+    // "Read <time>" once Claude has started on it (its own fade-in).
+    const deliveredEl = showDelivered ? (
+          <Box paddingRight={hasTail ? 1 : 0}>
+            {hasFaulted(readLine === undefined ? 'delivered' : 'read') ? (
+              <Text color={SMALL}>{readLine ?? 'Delivered'}</Text>
+            ) : readLine === undefined ? (
+              <Client
+                key="delivered"
+                module="./delivered.tsx"
+                props={{ ink: SMALL, steps: [...palette.deliveredSteps] }}
+              />
+            ) : (
+              <Client
+                key="read"
+                module="./delivered.tsx"
+                props={{ ink: SMALL, steps: [...palette.deliveredSteps], word: readLine }}
+              />
+            )}
+          </Box>
+    ) : null
+    const quoted: Quoted | undefined = (await read($, replies))[e.requestId]
+    const { Raster, Image } = $.ui.resolve(e)
+    const photosEl =
+      pasted.length > 0
+        ? photoRows({ Box, Text, Button, Raster, Image }, $, {
+            id: e.requestId,
+            requestId: e.requestId,
+            list: pasted,
+            sources: await pixelSources($, pasted, e.viewport),
+            side: 'sent',
+            round: bubbleShape === 'round',
+            tailCols: hasTail ? 1 : 0,
+          })
+        : null
+    const hasWords = words.trim() !== ''
 
     return (
       <Box flexDirection="column" width="100%" alignItems="flex-end" marginTop={1}>
@@ -1280,37 +2378,39 @@ export const register: Register = on => {
             <Text color={SMALL}>{` ${label.time}`}</Text>
           </Box>
         )}
-        {roundShape
-          ? roundBubble({ Box, Text }, {
-              side: 'sent',
-              width,
-              fill: sent,
-              who: 'user',
-              id: e.requestId,
-              tail: prefs.tail,
-              text,
-              children: body,
-            })
-          : bubble({ Box, Text }, {
-              shape: bubbleShape,
-              side: 'sent',
-              width,
-              fill: sent,
-              who: 'user',
-              children: body,
-            })}
-        {showDelivered && (
-          // Lined up with the bubble's right edge, not its tail. The plain
-          // word in its final colour once its fade-in Client has faulted.
-          <Box paddingRight={hasTail ? 1 : 0}>
-            {hasFaulted('delivered') ? (
-              <Text color={SMALL}>Delivered</Text>
-            ) : (
-              <Client
-                key="delivered"
-                module="./delivered.tsx"
-                props={{ ink: SMALL, steps: [...palette.deliveredSteps] }}
-              />
+        {quoted === undefined ? (
+          <Box key="plain" flexDirection="column" width="100%" alignItems="flex-end">
+            {photosEl}
+            {hasWords && (around.above as never)}
+            {hasWords && bubbleEl}
+            {hasWords && (around.below as never)}
+            {deliveredEl}
+          </Box>
+        ) : (
+          // A threaded reply: the faded original, then the line from under it
+          // turning into this bubble and running on past it.
+          <Box key="thread" flexDirection="column" width="100%">
+            {photosEl}
+            {fadedQuote({ Box, Text }, { quoted, shape: bubbleShape, palette, tail: hasTail })}
+            <Box key="thread-row" width="100%" flexDirection="row">
+              {replyRail({ Box, Text }, {
+                aboveRows: around.aboveRows,
+                bubbleRows: plainRows(words, bubbleShape, width),
+                belowRows: around.belowRows,
+                columns,
+              })}
+              <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
+                {around.above as never}
+                {bubbleEl}
+                {around.below as never}
+              </Box>
+            </Box>
+            {deliveredEl !== null && (
+              <Box key="thread-delivered" width="100%" flexDirection="row">
+                <Text color={SMALL}>{RAIL}</Text>
+                <Box flexGrow={1} />
+                {deliveredEl}
+              </Box>
             )}
           </Box>
         )}
@@ -1335,10 +2435,64 @@ export const register: Register = on => {
     const columns = e.viewport?.columns ?? FALLBACK_COLUMNS
     if (tableTooWide(text, columns)) return next(e)
 
-    const { Box, Text, Markdown } = $.ui.resolve(e)
+    const { Box, Text, Markdown, Button, Client } = $.ui.resolve(e)
     const width = replyWidth(text, columns)
-    const { received } = paletteOf(await themeOf($))
+    const palette = paletteOf(await themeOf($))
+    const { received } = palette
     const shape = shapeFor(prefs.shape, e.viewport)
+
+    const inThread = (await read($, threaded))[e.requestId] !== undefined
+    if (canHold(shape, e.viewport, e.requestId, text)) {
+      const tail = shape === 'round' && prefs.tail
+      const around = await aroundBubble($, { Box, Text, Button, Client }, {
+        id: e.requestId,
+        side: 'received',
+        shape,
+        width,
+        tail,
+        text,
+        fill: received,
+        palette,
+      })
+
+      const bubbleEl = heldBubble({ Box, Client }, {
+        side: 'received',
+        shape,
+        width: inThread ? Math.min(width, Math.max(4, columns - RAIL_WIDTH - 1)) : width,
+        fill: received,
+        pressFill: palette.pressReceived,
+        who: 'assistant',
+        id: e.requestId,
+        tail,
+        text,
+        isMarkdown: true,
+      })
+      if (inThread) {
+        // In a thread: the line comes down from the reply above and hooks
+        // into this bubble, which sits indented under it.
+        return (
+          <Box flexDirection="column" width="100%" alignItems="flex-start">
+            <Text color={SMALL}>{RAIL}</Text>
+            <Box key="thread-answer" flexDirection="row">
+              {answerRail({ Box, Text }, around.aboveRows)}
+              <Box flexDirection="column" alignItems="flex-start">
+                {around.above as never}
+                {bubbleEl}
+                {around.below as never}
+              </Box>
+            </Box>
+          </Box>
+        )
+      }
+
+      return (
+        <Box flexDirection="column" width="100%" alignItems="flex-start" marginTop={1}>
+          {around.above as never}
+          {bubbleEl}
+          {around.below as never}
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column" width="100%" alignItems="flex-start" marginTop={1}>
@@ -1426,6 +2580,34 @@ export const register: Register = on => {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const failed = await failedLine($, e)
     if (failed !== undefined) return failed
+    // A picture Claude looked at or sent: a photo bubble on Claude's side.
+    if (e.surface === 'terminal') {
+      const list = (await read($, pictures))[e.props.tool_use_id]
+      const prefs = await prefsOf($)
+      if (list !== undefined && list.length > 0 && !prefs.isOff) {
+        const { Box, Text, Button, Raster, Image } = $.ui.resolve(e)
+        const looked = e.props.tool === 'Read'
+        const photo = photoRows({ Box, Text, Button, Raster, Image }, $, {
+          id: e.props.tool_use_id,
+          requestId: e.requestId,
+          list,
+          sources: await pixelSources($, list, e.viewport),
+          side: 'received',
+          round: shapeFor(prefs.shape, e.viewport) === 'round',
+          tailCols: 0,
+          ...(looked ? { caption: `Claude looked at ${list[0]!.name}` } : {}),
+        })
+        if (!prefs.detail) return <Box flexDirection="column" marginTop={1}>{photo}</Box>
+        const engineRow = await next(e)
+
+        return (
+          <Box flexDirection="column">
+            {engineRow as never}
+            {photo}
+          </Box>
+        )
+      }
+    }
 
     return (await hides($, e)) ? nothing($, e) : next(e)
   }).catch(($, e, next) => next(e))
@@ -1460,7 +2642,9 @@ export const register: Register = on => {
     const prefs = await prefsOf($)
     if (prefs.isOff || prefs.detail) return next(e)
 
-    return next({ ...e, props: { ...e.props, rows: [] } })
+    // This mod's own row (the "Replying to" line) stays: it is what the next
+    // message will carry, so it must show while it is set.
+    return next({ ...e, props: { ...e.props, rows: e.props.rows.filter(row => row.plugin === 'chat-bubbles') } })
   }).catch(($, e, next) => next(e))
 
   // The dim line under the prompt without its keyboard tips (`(shift+tab to

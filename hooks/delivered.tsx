@@ -1,9 +1,9 @@
 import type { ClientModule } from 'claude-code'
 
-// "Delivered" fading in under the newest sent bubble: nothing for the first
+// "Delivered" (or `word`, "Read 4:02 PM") fading in under the newest sent bubble: nothing for the first
 // 400 ms, then the word in each colour of `steps` for 80 ms, ending on `ink`,
 // where the timer stops. The row keeps its width throughout, so nothing moves.
-export type DeliveredProps = { ink: string; steps: string[] }
+export type DeliveredProps = { ink: string; steps: string[]; word?: string }
 
 const WORD = 'Delivered'
 const TICK_MS = 80
@@ -25,9 +25,10 @@ const Delivered: ClientModule<DeliveredProps, number> = (props, surface) => {
 
   const step = surface.state ?? -1
   const { Text } = surface.elements
-  if (step < 0) return <Text>{' '.repeat(WORD.length)}</Text>
+  const word = props.word ?? WORD
+  if (step < 0) return <Text>{' '.repeat(word.length)}</Text>
 
-  return <Text color={props.steps[step] ?? props.ink}>{WORD}</Text>
+  return <Text color={props.steps[step] ?? props.ink}>{word}</Text>
 }
 
 export default Delivered

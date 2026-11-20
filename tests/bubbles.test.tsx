@@ -18,6 +18,44 @@ import {
 } from '../hooks/register'
 import { bubbleEdges } from '../hooks/shape'
 
+// A mounted row whose bubble is searched inside its hold Client too (0.5): in
+// full screen a block or round bubble is drawn whole by hold.tsx. A query
+// naming its own `in` is left as written.
+function mountRowOf($: Engine): Engine['ui']['mount'] {
+  return (async (args: Parameters<Engine['ui']['mount']>[0]) => mountRow($, args)) as Engine['ui']['mount']
+}
+
+async function mountRow($: Engine, args: Parameters<Engine['ui']['mount']>[0]) {
+  const ui = await $.ui.mount(args)
+  const find = ui.find.bind(ui)
+  type Query = Parameters<typeof find>[0]
+  // The hold Client's key: from the requestId given, else found in the drawing.
+  const holdKey = async () => {
+    const id = (args as { requestId?: string }).requestId
+    if (id !== undefined) return `hold:${id}`
+    const clients = (await ui.findAll({ type: 'Client' })) as { key?: string; props?: { key?: string } }[]
+
+    return clients.map(c => c.key ?? c.props?.key).find(k => typeof k === 'string' && k.startsWith('hold:'))
+  }
+  const deep = async (q: Query) => {
+    const found = await find(q)
+    if (found !== undefined || (q as { in?: string }).in !== undefined) return found
+    const key = await holdKey()
+
+    return key === undefined ? undefined : await find({ ...q, in: key } as Query).catch(() => undefined)
+  }
+
+  // The mounted drawing is frozen: a copy of its members with `find` swapped.
+  const copy: Record<string, unknown> = {}
+  for (const name of Object.getOwnPropertyNames(ui)) {
+    const value = (ui as unknown as Record<string, unknown>)[name]
+    copy[name] = typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(ui) : value
+  }
+  copy.find = deep
+
+  return copy as unknown as typeof ui
+}
+
 const VIEWPORT = { columns: 100, rows: 40 }
 const FULLSCREEN = { columns: 100, rows: 40, isFullscreen: true }
 
@@ -169,7 +207,7 @@ test('by default every bubble is a block: no edge rows, a filled line above and 
     [REPLY, 'assistant'],
     [SPINNER, 'typing'],
   ] as const) {
-    const ui = await $.ui.mount({ ...target, surface: 'terminal' })
+    const ui = await mountRowOf($)({ ...target, surface: 'terminal' })
     const body = await ui.find({ key: `bubble-${who}` })
     expect({ who, paddingY: body?.props.paddingY, paddingX: body?.props.paddingX }).toEqual({ who, paddingY: 1, paddingX: 2 })
     expect(await edgeRows(ui)).toEqual({ top: undefined, bottom: undefined })
@@ -179,7 +217,7 @@ test('by default every bubble is a block: no edge rows, a filled line above and 
 
 test('a typed prompt as a blue pill, two columns of padding each side', async ($, on) => {
   engineDraws(on, { style: 'pill' })
-  const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
 
   const body = await ui.find({ key: 'bubble-user' })
   expect(body?.props.backgroundColor).toBe('#0073EB')
@@ -194,7 +232,7 @@ test('a typed prompt as a blue pill, two columns of padding each side', async ($
 
 test('a long prompt wraps at 68 columns of text, or 75% of a narrow row', async ($, on) => {
   engineDraws(on, { style: 'pill' })
-  const wide = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: LONG } })
+  const wide = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: LONG } })
 
   // 68 + 4 padding = 72, under 75% of 100.
   expect((await wide.find({ key: 'bubble-user' }))?.props.width).toBe(72)
@@ -204,7 +242,7 @@ test('a long prompt wraps at 68 columns of text, or 75% of a narrow row', async 
   await wide.unmount()
 
   // At 80 columns, 75% (60) is the smaller.
-  const narrow = await $.ui.mount({
+  const narrow = await mountRowOf($)({
     ...PROMPT,
     viewport: { columns: 80, rows: 40 },
     surface: 'terminal',
@@ -216,7 +254,7 @@ test('a long prompt wraps at 68 columns of text, or 75% of a narrow row', async 
 
 test('a reply as a gray pill holding its markdown', async ($, on) => {
   engineDraws(on, { style: 'pill' })
-  const ui = await $.ui.mount({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi there, friend.' } })
+  const ui = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi there, friend.' } })
 
   const body = await ui.find({ key: 'bubble-assistant' })
   expect(body?.props.backgroundColor).toBe('userMessageBackground')
@@ -299,7 +337,7 @@ test('T2: a table wider than 85% of the row gets a bubble whose inside holds it'
 test('T3: a reply whose table no bubble can hold is the engine row; one that fits is a bubble', async ($, on) => {
   engineDraws(on, { style: 'round' })
   const draw = async (text: string, columns: number) => {
-    const ui = await $.ui.mount({ ...REPLY, requestId: 'r1', viewport: { ...FULLSCREEN, columns }, surface: 'terminal', props: { ...REPLY.props, text } })
+    const ui = await mountRowOf($)({ ...REPLY, requestId: 'r1', viewport: { ...FULLSCREEN, columns }, surface: 'terminal', props: { ...REPLY.props, text } })
     const engine = await isEngine(ui)
     const shape = (await ui.find({ key: 'shape-assistant' }))?.props.width
     await ui.unmount()
@@ -437,7 +475,7 @@ test('G2b: a failed store write leaves the old value and says it did not take', 
 
   const reply = await typed($, 'style pill')
   expect(reply.text).toMatch(/did not take/)
-  const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   // Still block: a filled line above and below, no edge rows.
   expect((await ui.find({ key: 'bubble-user' }))?.props.paddingY).toBe(1)
   expect(await ui.find({ type: 'Text', text: /^▗/ })).toBeUndefined()
@@ -472,7 +510,7 @@ test('H3: /bubbles while the store cannot be read changes nothing', async ($, on
   expect(writes).toEqual([])
 
   failing = false
-  const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   // The stored pill and "on" are honoured; detail stayed off.
   expect((await ui.find({ type: 'Text', text: /^▗/ }))?.text).toBe(`▗${'▄'.repeat(13)}▖`)
   await ui.unmount()
@@ -494,11 +532,11 @@ test('G2c: a failed store read uses the defaults once, then reads again', async 
     return <Text>engine</Text>
   })
 
-  const first = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const first = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   expect((await first.find({ key: 'bubble-user' }))?.props.paddingY).toBe(1) // default: block
   await first.unmount()
 
-  const second = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const second = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   expect((await second.find({ type: 'Text', text: /^▗/ }))?.text).toBe(`▗${'▄'.repeat(13)}▖`) // stored pill
   await second.unmount()
 })
@@ -520,7 +558,7 @@ test('F4: many draws read each stored switch at most once', async ($, on) => {
 
   for (let i = 0; i < 5; i += 1) {
     for (const target of [PROMPT, REPLY, SPINNER, TOOL_USE] as const) {
-      const ui = await $.ui.mount({ ...target, surface: 'terminal' })
+      const ui = await mountRowOf($)({ ...target, surface: 'terminal' })
       await ui.unmount()
     }
   }
@@ -531,7 +569,7 @@ test('F4: many draws read each stored switch at most once', async ($, on) => {
 
 test('a drawn reply with a table takes the estimated width', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: TABLE } })
+  const ui = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: TABLE } })
 
   expect((await ui.find({ key: 'bubble-assistant' }))?.props.width).toBe(15)
   await ui.unmount()
@@ -543,13 +581,13 @@ test('/bubbles style picks the shape, is stored, and lists the names when unknow
   engineDraws(on)
 
   expect((await typed($, 'style tail')).text).toBe('Style tail.')
-  let ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  let ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   expect((await edgeRows(ui)).bottom).toBe(`▝${'▀'.repeat(13)}▀▘`)
   expect((await ui.find({ key: 'shape-user' }))?.props.width).toBe(16)
   await ui.unmount()
 
   expect((await typed($, 'style block')).text).toBe('Style block.')
-  ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   expect(await edgeRows(ui)).toEqual({ top: undefined, bottom: undefined })
   expect((await ui.find({ key: 'bubble-user' }))?.props.paddingY).toBe(1)
   await ui.unmount()
@@ -558,7 +596,7 @@ test('/bubbles style picks the shape, is stored, and lists the names when unknow
   expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail off. Style block. Tail on.')
 
   expect((await typed($, 'style pill')).text).toBe('Style pill.')
-  ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   expect((await edgeRows(ui)).bottom).toBe(`▝${'▀'.repeat(13)}▘`)
   await ui.unmount()
 })
@@ -597,16 +635,16 @@ test('F5: the header stays on the thread\'s true first prompt after the list dro
   const list = Array.from({ length: 500 }, (_, i) => ({ uuid: `p${i + 2}`, at: START + (i + 1) * MINUTE }))
   stamped(on, list, 'p1')
 
-  const first = await $.ui.mount({ ...PROMPT, requestId: 'p1', surface: 'terminal' })
+  const first = await mountRowOf($)({ ...PROMPT, requestId: 'p1', surface: 'terminal' })
   expect((await first.find({ type: 'Text', text: /^Claude$/ }))?.props.bold).toBe(true)
   expect(await first.find({ type: 'Text', text: /^iMessage$/ })).toBeDefined()
   await first.unmount()
 
-  const second = await $.ui.mount({ ...PROMPT, requestId: 'p2', surface: 'terminal' })
+  const second = await mountRowOf($)({ ...PROMPT, requestId: 'p2', surface: 'terminal' })
   expect(await second.find({ type: 'Text', text: /✻|Claude|iMessage/ })).toBeUndefined()
   await second.unmount()
 
-  const later = await $.ui.mount({ ...PROMPT, requestId: 'p300', surface: 'terminal' })
+  const later = await mountRowOf($)({ ...PROMPT, requestId: 'p300', surface: 'terminal' })
   expect(await later.find({ type: 'Text', text: /✻|Claude|iMessage/ })).toBeUndefined()
   await later.unmount()
 })
@@ -652,7 +690,7 @@ test('a prompt from an earlier day reads with its weekday and date', async ($, o
   mock.clock(on, { now: START })
   stamped(on, [{ uuid: 'old', at: new Date(2026, 10, 17, 21, 5).getTime() }])
 
-  const ui = await $.ui.mount({ ...PROMPT, requestId: 'old', surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, requestId: 'old', surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /Nov 17/ }))?.text).toBe('Tue, Nov 17')
   expect((await ui.find({ type: 'Text', text: /PM/ }))?.text).toBe(' at 9:05 PM')
   await ui.unmount()
@@ -666,13 +704,13 @@ test('Delivered sits under the newest sent bubble, where rows redraw', async ($,
     { uuid: 'p2', at: START + MINUTE },
   ])
 
-  const older = await $.ui.mount({ ...PROMPT, requestId: 'p1', viewport: FULLSCREEN, surface: 'terminal' })
+  const older = await mountRowOf($)({ ...PROMPT, requestId: 'p1', viewport: FULLSCREEN, surface: 'terminal' })
   expect(await older.find({ type: 'Text', text: /^Delivered$/ })).toBeUndefined()
   await older.unmount()
 
   // A1: the newest prompt's Delivered fades in: nothing for 400 ms, then the
   // word in each step colour for 80 ms, ending on the ink.
-  const newest = await $.ui.mount({ ...PROMPT, requestId: 'p2', viewport: FULLSCREEN, surface: 'terminal' })
+  const newest = await mountRowOf($)({ ...PROMPT, requestId: 'p2', viewport: FULLSCREEN, surface: 'terminal' })
   const word = async () => newest.find({ type: 'Text', in: 'delivered' })
   expect((await word())?.text.trim()).toBe('')
   await newest.advance(320)
@@ -690,7 +728,7 @@ test('Delivered sits under the newest sent bubble, where rows redraw', async ($,
   await newest.unmount()
 
   // On the main screen a printed row never redraws: no Delivered at all.
-  const printed = await $.ui.mount({ ...PROMPT, requestId: 'p2', surface: 'terminal' })
+  const printed = await mountRowOf($)({ ...PROMPT, requestId: 'p2', surface: 'terminal' })
   expect(await printed.find({ type: 'Text', text: /Delivered/ })).toBeUndefined()
   await printed.unmount()
 })
@@ -699,7 +737,7 @@ test('Delivered sits under the newest sent bubble, where rows redraw', async ($,
 
 test('while Claude works, only the typing bubble shows, its dots in a Client', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...SPINNER, surface: 'terminal' })
 
   expect((await ui.find({ key: 'bubble-typing' }))?.props.backgroundColor).toBe('userMessageBackground')
   const client = await ui.find({ type: 'Client', key: 'typing:Thinking' })
@@ -710,7 +748,7 @@ test('while Claude works, only the typing bubble shows, its dots in a Client', a
 
 test('the bright dot moves on every 300 ms tick', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...SPINNER, surface: 'terminal' })
 
   // The first dot: bright at step 0, dim once the bright dot has moved on.
   const first = async () => (await ui.find({ type: 'Text', text: /•/, in: 'typing:Thinking' }))?.props.color
@@ -724,7 +762,7 @@ test('the bright dot moves on every 300 ms tick', async ($, on) => {
 
 test('with detail on, the engine spinner row sits under the typing bubble', async ($, on) => {
   engineDraws(on, { detail: true })
-  const ui = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...SPINNER, surface: 'terminal' })
 
   expect(await ui.find({ type: 'Client', key: 'typing:Thinking' })).toBeDefined()
   expect((await ui.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
@@ -746,7 +784,7 @@ async function isEngine(ui: Ui) {
 test('clean tool rows and their pill draw nothing', async ($, on) => {
   engineDraws(on)
   for (const row of HIDDEN) {
-    const ui = await $.ui.mount({ ...row, surface: 'terminal' })
+    const ui = await mountRowOf($)({ ...row, surface: 'terminal' })
     expect({ component: row.component, hidden: await isHidden(ui) }).toEqual({ component: row.component, hidden: true })
     await ui.unmount()
   }
@@ -763,12 +801,12 @@ test('F2: a tool row that failed or was stopped is never hidden', async ($, on) 
 
   // (M1 replaced the failed and stopped rows by one red line; see below.)
   expect(
-    await shown('ToolGroup not calls-only', await $.ui.mount({ ...TOOL_GROUP, surface: 'terminal', props: { ...TOOL_GROUP.props, isCallsOnly: false } })),
+    await shown('ToolGroup not calls-only', await mountRowOf($)({ ...TOOL_GROUP, surface: 'terminal', props: { ...TOOL_GROUP.props, isCallsOnly: false } })),
   ).toEqual({ name: 'ToolGroup not calls-only', engine: true })
   expect(
     await shown(
       'ToolGroup calls-only unknown',
-      await $.ui.mount({ ...TOOL_GROUP, surface: 'terminal', props: { calls: [], isActive: false, isExpanded: false } }),
+      await mountRowOf($)({ ...TOOL_GROUP, surface: 'terminal', props: { calls: [], isActive: false, isExpanded: false } }),
     ),
   ).toEqual({ name: 'ToolGroup calls-only unknown', engine: true })
 })
@@ -784,7 +822,7 @@ async function failLine(ui: Ui) {
 
 test('M1: a failed call\'s result row is one red line naming the tool', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...TOOL_RESULT,
     requestId: 'z1',
     surface: 'terminal',
@@ -802,21 +840,21 @@ test('M1: a failed or stopped call row names the tool; a group counts its failur
     lines[label] = (await failLine(ui))?.text
     await ui.unmount()
   }
-  await take('result errored', await $.ui.mount({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'a', isErrored: true } }))
-  await take('use stopped', await $.ui.mount({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 'b', isInterrupted: true } }))
-  await take('result no name', await $.ui.mount({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'c', tool: '', isErrored: true } }))
+  await take('result errored', await mountRowOf($)({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'a', isErrored: true } }))
+  await take('use stopped', await mountRowOf($)({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 'b', isInterrupted: true } }))
+  await take('result no name', await mountRowOf($)({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'c', tool: '', isErrored: true } }))
   const call = (id: string, tool: string, isErrored: boolean, isInterrupted = false) => ({
     tool_use_id: id, tool, input: {}, isRunning: false, isErrored, isInterrupted,
   })
-  await take('group one', await $.ui.mount({
+  await take('group one', await mountRowOf($)({
     ...TOOL_GROUP, surface: 'terminal',
     props: { calls: [call('g1', 'Read', true)], isActive: false, isExpanded: false, isCallsOnly: false },
   }))
-  await take('group three', await $.ui.mount({
+  await take('group three', await mountRowOf($)({
     ...TOOL_GROUP, surface: 'terminal',
     props: { calls: [call('g2', 'Read', true), call('g3', 'Grep', false), call('g4', 'Bash', false)], isActive: false, isExpanded: false, isCallsOnly: false },
   }))
-  await take('group stopped', await $.ui.mount({
+  await take('group stopped', await mountRowOf($)({
     ...TOOL_GROUP, surface: 'terminal',
     props: { calls: [call('g5', 'Read', false, true), call('g6', 'Grep', false)], isActive: false, isExpanded: false, isCallsOnly: false },
   }))
@@ -833,16 +871,16 @@ test('M1: a failed or stopped call row names the tool; a group counts its failur
 test('Q2: a failed call row draws nothing; its result row carries the one line', async ($, on) => {
   engineDraws(on)
   // The call's row and its result row both carry the failure for id x1.
-  const use = await $.ui.mount({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 'x1', isErrored: true } })
-  const result = await $.ui.mount({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'x1', isErrored: true } })
+  const use = await mountRowOf($)({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 'x1', isErrored: true } })
+  const result = await mountRowOf($)({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'x1', isErrored: true } })
   expect(await isHidden(use)).toBe(true)
   expect(await failLine(result)).toEqual({ text: 'Bash failed', color: '#FF453A' })
   await use.unmount()
   await result.unmount()
 
   // Only the result row is flagged (the call's own row is clean): its line shows.
-  const cleanUse = await $.ui.mount({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 'x2' } })
-  const flagged = await $.ui.mount({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'x2', isErrored: true } })
+  const cleanUse = await mountRowOf($)({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 'x2' } })
+  const flagged = await mountRowOf($)({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'x2', isErrored: true } })
   expect(await isHidden(cleanUse)).toBe(true)
   expect((await failLine(flagged))?.text).toBe('Bash failed')
   await cleanUse.unmount()
@@ -853,25 +891,25 @@ test('M1: the red is #D70015 on a light theme', async ($, on) => {
   engineDraws(on)
   themed(on, () => 'light')
   await startSession($)
-  const ui = await $.ui.mount({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'l1', isErrored: true } })
+  const ui = await mountRowOf($)({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'l1', isErrored: true } })
   expect((await failLine(ui))?.color).toBe('#D70015')
   await ui.unmount()
 })
 
 test('M1: detail on, the ctrl+o view and mod off keep the engine\'s failed rows', async ($, on) => {
   engineDraws(on)
-  const expanded = await $.ui.mount({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 'e1', isErrored: true, isExpanded: true } })
+  const expanded = await mountRowOf($)({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 'e1', isErrored: true, isExpanded: true } })
   expect(await isEngine(expanded)).toBe(true)
   await expanded.unmount()
 
   expect((await typed($, 'detail on')).text).toBe('Detail on.')
-  const detail = await $.ui.mount({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'e2', isErrored: true } })
+  const detail = await mountRowOf($)({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'e2', isErrored: true } })
   expect(await isEngine(detail)).toBe(true)
   await detail.unmount()
 
   expect((await typed($, 'detail off')).text).toBe('Detail off.')
   expect((await typed($, 'off')).text).toBe('Chat bubbles off in this chat.')
-  const off = await $.ui.mount({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'e3', isErrored: true } })
+  const off = await mountRowOf($)({ ...TOOL_RESULT, surface: 'terminal', props: { ...TOOL_RESULT.props, tool_use_id: 'e3', isErrored: true } })
   expect(await isEngine(off)).toBe(true)
   await off.unmount()
 })
@@ -880,7 +918,7 @@ test('B1/B2: the turn line and the notice under the logo draw nothing in clean m
   engineDraws(on)
   const results: Record<string, boolean> = {}
   for (const row of [TURN, INFO] as const) {
-    const ui = await $.ui.mount({ ...row, surface: 'terminal' })
+    const ui = await mountRowOf($)({ ...row, surface: 'terminal' })
     results[row.component] = await isHidden(ui)
     await ui.unmount()
   }
@@ -889,7 +927,7 @@ test('B1/B2: the turn line and the notice under the logo draw nothing in clean m
 
 test('a turn line that only says what it waits on is kept', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...TURN,
     surface: 'terminal',
     props: { ...TURN.props, waitingFor: { agents: [], workflows: 0 } },
@@ -902,7 +940,7 @@ test('a turn line that only says what it waits on is kept', async ($, on) => {
 test('the ctrl+o view keeps every hidden row', async ($, on) => {
   engineDraws(on)
   for (const row of [TOOL_USE, TOOL_RESULT, TOOL_GROUP, TURN] as const) {
-    const ui = await $.ui.mount({ ...row, surface: 'terminal', props: { ...row.props, isExpanded: true } })
+    const ui = await mountRowOf($)({ ...row, surface: 'terminal', props: { ...row.props, isExpanded: true } })
     expect({ component: row.component, engine: await isEngine(ui) }).toEqual({ component: row.component, engine: true })
     await ui.unmount()
   }
@@ -914,13 +952,13 @@ test('/bubbles detail on brings the hidden rows back; off hides them again', asy
   expect((await typed($, 'detail on')).text).toBe('Detail on.')
   expect((await typed($, '')).text).toBe('Chat bubbles on in this chat. Detail on. Style block. Tail on.')
   for (const row of HIDDEN) {
-    const ui = await $.ui.mount({ ...row, surface: 'terminal' })
+    const ui = await mountRowOf($)({ ...row, surface: 'terminal' })
     expect({ component: row.component, engine: await isEngine(ui) }).toEqual({ component: row.component, engine: true })
     await ui.unmount()
   }
 
   expect((await typed($, 'detail off')).text).toBe('Detail off.')
-  const ui = await $.ui.mount({ ...TOOL_USE, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...TOOL_USE, surface: 'terminal' })
   expect(await isHidden(ui)).toBe(true)
   await ui.unmount()
 })
@@ -928,7 +966,7 @@ test('/bubbles detail on brings the hidden rows back; off hides them again', asy
 test('a surface other than the terminal keeps every row', async ($, on) => {
   engineDraws(on)
   for (const row of [PROMPT, REPLY, SPINNER, TOOL_USE, TOOL_RESULT, TOOL_GROUP, TURN, INFO] as const) {
-    const ui = await $.ui.mount({ ...row, surface: 'desktop' })
+    const ui = await mountRowOf($)({ ...row, surface: 'desktop' })
     expect({ component: row.component, engine: await isEngine(ui) }).toEqual({ component: row.component, engine: true })
     await ui.unmount()
   }
@@ -940,7 +978,7 @@ test('G1: the person\'s own words from another device are blue bubbles too', asy
   engineDraws(on)
   const results: Record<string, boolean> = {}
   for (const origin of [{ kind: 'bridge' }, { kind: 'slack-ping' }] as const) {
-    const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, origin } })
+    const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, origin } })
     results[origin.kind] = (await ui.find({ key: 'bubble-user' }))?.props.backgroundColor === '#0073EB'
     await ui.unmount()
   }
@@ -958,7 +996,7 @@ async function grayLine(ui: Ui) {
 
 test('L2: a plugin\'s own message is a gray line naming the plugin', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, origin: { kind: 'plugin', name: 'notes' } } })
+  const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, origin: { kind: 'plugin', name: 'notes' } } })
   expect(await ui.find({ key: 'bubble-user' })).toBeUndefined()
   expect(await grayLine(ui)).toEqual({ text: 'The notes plugin sent a message', color: '#8E8E93' })
   await ui.unmount()
@@ -975,7 +1013,7 @@ async function viaLine(ui: Ui) {
 
 test('P1a: a channel message is a received bubble with "via <server>" above it', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, text: 'can you check the deploy?', origin: { kind: 'channel', server: 'slack' } },
@@ -995,7 +1033,7 @@ test('P1a: a channel message is a received bubble with "via <server>" above it',
 
 test('Q1: an unclassified row with no sender and no task is left to the engine', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, text: 'Goal set: make it look like iMessage', origin: { kind: 'unclassified' } },
@@ -1008,7 +1046,7 @@ test('Q1: an unclassified row with no sender and no task is left to the engine',
 
 test('Q1: a teammate (unclassified with a sender) is the gray "<name> sent an update" line', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, text: 'status: done', origin: { kind: 'unclassified' }, from: { name: 'builder' } },
@@ -1030,7 +1068,7 @@ const teammateRow = (text: string, props: Record<string, unknown> = {}) => ({
 test('V1: teammate frames with no sender: one gray line, by teammate or "Teammates sent updates"', async ($, on) => {
   engineDraws(on)
   const lineOf = async (text: string) => {
-    const ui = await $.ui.mount(teammateRow(text))
+    const ui = await mountRowOf($)(teammateRow(text))
     const line = await grayLine(ui)
     const engine = await isEngine(ui)
     await ui.unmount()
@@ -1065,7 +1103,7 @@ const REPORT = 'Finished the first draft.\nFiles changed: notes.md.'
 test('A: a drain row with idle notices is one gray line naming its senders', async ($, on) => {
   engineDraws(on)
   const lineOf = async (text: string, origin: { kind: 'unclassified' | 'peer' } = { kind: 'unclassified' }) => {
-    const ui = await $.ui.mount(teammateRow(text, { origin }))
+    const ui = await mountRowOf($)(teammateRow(text, { origin }))
     const line = await grayLine(ui)
     const engine = await isEngine(ui)
     const texts = await ui.find({ type: 'Text', text: /idle_notification|first draft/ })
@@ -1119,7 +1157,7 @@ test('V1: a notice line in any row but an unclassified one changes nothing; no s
   }
   const out: Record<string, string> = {}
   for (const [k, origin] of Object.entries(origins)) {
-    const ui = await $.ui.mount({ ...PROMPT, requestId: 'x1', surface: 'terminal', props: { ...PROMPT.props, text: log, origin } } as never)
+    const ui = await mountRowOf($)({ ...PROMPT, requestId: 'x1', surface: 'terminal', props: { ...PROMPT.props, text: log, origin } } as never)
     out[k] = await drawnAs(ui)
     await ui.unmount()
   }
@@ -1138,10 +1176,10 @@ test('V1: a notice line in any row but an unclassified one changes nothing; no s
     unclassified: 'gray:ops-bot sent an update',
     none: 'gray:A message arrived from outside this chat',
   })
-  const spoof = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: NOTICE('planner'), origin: { kind: 'plugin', name: 'some-plugin' } } })
+  const spoof = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: NOTICE('planner'), origin: { kind: 'plugin', name: 'some-plugin' } } })
   expect(await drawnAs(spoof)).toBe('gray:The some-plugin plugin sent a message')
   await spoof.unmount()
-  const framed = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: frame('planner', 'hi'), origin: { kind: 'plugin', name: 'some-plugin' } } })
+  const framed = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: frame('planner', 'hi'), origin: { kind: 'plugin', name: 'some-plugin' } } })
   expect(await drawnAs(framed)).toBe('gray:The some-plugin plugin sent a message')
   await framed.unmount()
 })
@@ -1157,7 +1195,7 @@ test('V2: a name drops bidi controls and zero-width characters', () => {
 test('V3: wide characters keep the cap columns in round', async ($, on) => {
   engineDraws(on, { style: 'round' })
   for (const [id, text] of [['w1', '日本語のテキスト'], ['w2', '👍👍👍']] as const) {
-    const ui = await $.ui.mount({ ...PROMPT, requestId: id, viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, text } })
+    const ui = await mountRowOf($)({ ...PROMPT, requestId: id, viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, text } })
     expect({ text, column: (await capColumnOf(ui, `cap-left:${id}`))?.type }).toEqual({ text, column: 'Box' })
     await ui.unmount()
   }
@@ -1169,7 +1207,7 @@ test('V4: widths count cells, wide characters two, in every style', async ($, on
   expect(replyWidth('👍👍', 100)).toBe(4 + 4)
   expect(replyWidth('abc', 100)).toBe(3 + 4)
   engineDraws(on)
-  const block = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: '日本語のテキスト' } })
+  const block = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: '日本語のテキスト' } })
   expect((await block.find({ key: 'bubble-user' }))?.props.width).toBe(16 + 4)
   await block.unmount()
 })
@@ -1179,7 +1217,7 @@ test('V4: widths count cells, wide characters two, in every style', async ($, on
 test('V5: the first draw after a reload reads the saved theme', async ($, on) => {
   engineDraws(on)
   on('state.get', (_, e, next) => (e.plugin === 'chat-bubbles' && e.key === 'theme' ? { value: { value: 'light', version: 1 } } : next(e)))
-  const ui = await $.ui.mount({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi there.' } })
+  const ui = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi there.' } })
   expect((await ui.find({ key: 'bubble-assistant' }))?.props.backgroundColor).toBe('#E9E9E9')
   await ui.unmount()
 })
@@ -1217,14 +1255,14 @@ test('R3: a name drops format, filler and tag characters too', () => {
 
 test('A: own words quoting an idle notice stay a blue bubble; detail on keeps the engine row', async ($, on) => {
   engineDraws(on)
-  const own = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: `why does this show?\n${NOTICE('builder')}` } })
+  const own = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, text: `why does this show?\n${NOTICE('builder')}` } })
   expect((await own.find({ key: 'bubble-user' }))?.props.backgroundColor).toBe('#0073EB')
   await own.unmount()
 })
 
 test('A: a drain row with detail on is the engine row', async ($, on) => {
   engineDraws(on, { detail: true })
-  const ui = await $.ui.mount(teammateRow(`${REPORT}\n\n${NOTICE('builder')}`))
+  const ui = await mountRowOf($)(teammateRow(`${REPORT}\n\n${NOTICE('builder')}`))
   expect(await isEngine(ui)).toBe(true)
   await ui.unmount()
 })
@@ -1232,7 +1270,7 @@ test('A: a drain row with detail on is the engine row', async ($, on) => {
 test('W1: real stored teammate rows: leading line, closing paragraph; anything else outside frames is the engine row', async ($, on) => {
   engineDraws(on)
   const lineOf = async (text: string) => {
-    const ui = await $.ui.mount(teammateRow(text))
+    const ui = await mountRowOf($)(teammateRow(text))
     const line = await grayLine(ui)
     const engine = await isEngine(ui)
     await ui.unmount()
@@ -1260,21 +1298,21 @@ test('W1: real stored teammate rows: leading line, closing paragraph; anything e
 
 test('V1: teammate frames keep the engine row with detail on, in the ctrl+o view, and with a task', async ($, on) => {
   engineDraws(on, { detail: true })
-  const detail = await $.ui.mount(teammateRow(frame('builder')))
+  const detail = await mountRowOf($)(teammateRow(frame('builder')))
   expect(await isEngine(detail)).toBe(true)
   await detail.unmount()
 })
 
 test('V1: teammate frames in the ctrl+o view are the engine row', async ($, on) => {
   engineDraws(on)
-  const expanded = await $.ui.mount(teammateRow(frame('builder'), { isExpanded: true }))
+  const expanded = await mountRowOf($)(teammateRow(frame('builder'), { isExpanded: true }))
   expect(await isEngine(expanded)).toBe(true)
   await expanded.unmount()
 })
 
 test('Q1: a channel message with a sender reads "<sender> via <server>"', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, text: 'can you check the deploy?', origin: { kind: 'channel', server: 'slack' }, from: { name: 'ana' } },
@@ -1287,7 +1325,7 @@ test('Q1: a channel message with a sender reads "<sender> via <server>"', async 
 test('Q3: names in a small line are one line of at most 32 characters', async ($, on) => {
   engineDraws(on)
   const long = 'a-very-long-server-name-that-goes-on-and-on'
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, origin: { kind: 'channel', server: `${long}\nsecond line` }, from: { name: `${long}-person` } },
@@ -1297,11 +1335,11 @@ test('Q3: names in a small line are one line of at most 32 characters', async ($
   expect({ sender: sender?.length, server: server?.length, lines: text.split('\n').length }).toEqual({ sender: 32, server: 32, lines: 1 })
   await ui.unmount()
 
-  const peer = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, origin: { kind: 'peer' }, from: { name: `${long}-agent` } } })
+  const peer = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, origin: { kind: 'peer' }, from: { name: `${long}-agent` } } })
   expect((await grayLine(peer))?.text).toBe(`${long.slice(0, 31)}… sent an update`)
   await peer.unmount()
 
-  const plugin = await $.ui.mount({
+  const plugin = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, origin: { kind: 'plugin', name: `${long}-plugin`, asUser: true } },
@@ -1313,7 +1351,7 @@ test('Q3: names in a small line are one line of at most 32 characters', async ($
 test('P1a: text wrapped in markup is left to the engine, never bubbled or hidden', async ($, on) => {
   engineDraws(on)
   for (const origin of [{ kind: 'channel', server: 'slack' }, { kind: 'unclassified' }] as const) {
-    const ui = await $.ui.mount({
+    const ui = await mountRowOf($)({
       ...PROMPT,
       surface: 'terminal',
       props: { ...PROMPT.props, text: '<channel source="slack" user="ana">hi there</channel>', origin },
@@ -1325,7 +1363,7 @@ test('P1a: text wrapped in markup is left to the engine, never bubbled or hidden
 
 test('P1a: in round, full screen, the line sits over the text, past the tail and the cap', async ($, on) => {
   engineDraws(on, { style: 'round' })
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...PROMPT,
     requestId: 'ch1',
     viewport: FULLSCREEN,
@@ -1339,7 +1377,7 @@ test('P1a: in round, full screen, the line sits over the text, past the tail and
 
 test('P1b: a plugin\'s "as the user" text is a sent bubble with "via <plugin>" above it, not recorded', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, text: 'yes, ship it', origin: { kind: 'plugin', name: 'dictation', asUser: true } },
@@ -1362,7 +1400,7 @@ test('P1c: a task line adds the task\'s own short label when its summary gives o
     [`Background command "${'x'.repeat(80)}" completed`, 'completed'],
     ['A summary with no label', 'completed'],
   ] as const) {
-    const ui = await $.ui.mount({
+    const ui = await mountRowOf($)({
       ...PROMPT,
       surface: 'terminal',
       props: { ...PROMPT.props, text, origin: { kind: 'task-notification' }, task: { status } },
@@ -1381,7 +1419,7 @@ test('P1c: a task line adds the task\'s own short label when its summary gives o
 
 test('P1: with detail on, a channel message keeps the engine row', async ($, on) => {
   engineDraws(on, { detail: true })
-  const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, origin: { kind: 'channel', server: 'slack' } } })
+  const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, origin: { kind: 'channel', server: 'slack' } } })
   expect(await isEngine(ui)).toBe(true)
   await ui.unmount()
 })
@@ -1406,7 +1444,7 @@ test('L2: each origin kind gets its own plain line', async ($, on) => {
     ['sdk', { origin: { kind: 'sdk' } }],
     ['bridge with a sender', { origin: { kind: 'bridge' }, from: { name: 'worker' } }],
   ] as const) {
-    const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, ...props } })
+    const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, ...props } })
     lines[label] = (await grayLine(ui))?.text
     await ui.unmount()
   }
@@ -1433,33 +1471,33 @@ test('L2: the gray line falls through: detail on, ctrl+o, mod off, empty text, o
   engineDraws(on)
   const PEER = { ...PROMPT.props, origin: { kind: 'peer' }, from: { name: 'builder' } } as const
 
-  const expanded = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PEER, isExpanded: true } })
+  const expanded = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PEER, isExpanded: true } })
   expect(await isEngine(expanded)).toBe(true)
   await expanded.unmount()
 
-  const empty = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PEER, text: '   ' } })
+  const empty = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PEER, text: '   ' } })
   expect(await isEngine(empty)).toBe(true)
   await empty.unmount()
 
-  const desktop = await $.ui.mount({ ...PROMPT, surface: 'desktop', props: PEER })
+  const desktop = await mountRowOf($)({ ...PROMPT, surface: 'desktop', props: PEER })
   expect(await isEngine(desktop)).toBe(true)
   await desktop.unmount()
 
   expect((await typed($, 'detail on')).text).toBe('Detail on.')
-  const detail = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: PEER })
+  const detail = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: PEER })
   expect(await isEngine(detail)).toBe(true)
   await detail.unmount()
 
   expect((await typed($, 'detail off')).text).toBe('Detail off.')
   expect((await typed($, 'off')).text).toBe('Chat bubbles off in this chat.')
-  const off = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: PEER })
+  const off = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: PEER })
   expect(await isEngine(off)).toBe(true)
   await off.unmount()
 })
 
 test('G1: a message carrying a sender or a task is never a blue bubble', async ($, on) => {
   engineDraws(on)
-  const withSender = await $.ui.mount({
+  const withSender = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, origin: { kind: 'bridge' }, from: { name: 'worker' } },
@@ -1468,7 +1506,7 @@ test('G1: a message carrying a sender or a task is never a blue bubble', async (
   await withSender.unmount()
 
   // H5: a task, too.
-  const withTask = await $.ui.mount({
+  const withTask = await mountRowOf($)({
     ...PROMPT,
     surface: 'terminal',
     props: { ...PROMPT.props, origin: { kind: 'bridge' }, task: { id: 't1', status: 'completed' } },
@@ -1508,13 +1546,13 @@ test('H1: a phone message that opens the thread gets the header; a later typed p
   ])
   const BRIDGE = { origin: { kind: 'bridge' } } as const
 
-  const phone = await $.ui.mount({ ...PROMPT, requestId: 'phone', viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, ...BRIDGE } })
+  const phone = await mountRowOf($)({ ...PROMPT, requestId: 'phone', viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, ...BRIDGE } })
   expect((await phone.find({ type: 'Text', text: /^Claude$/ }))?.props.bold).toBe(true)
   expect((await phone.find({ type: 'Text', text: /^ \d{1,2}:\d{2} (AM|PM)$/ }))?.text).toBe(' 12:21 AM')
   expect(await phone.find({ type: 'Client', key: 'delivered' })).toBeUndefined()
   await phone.unmount()
 
-  const typed = await $.ui.mount({ ...PROMPT, requestId: 'typed', viewport: FULLSCREEN, surface: 'terminal' })
+  const typed = await mountRowOf($)({ ...PROMPT, requestId: 'typed', viewport: FULLSCREEN, surface: 'terminal' })
   expect(await typed.find({ type: 'Text', text: /✻|Claude|iMessage/ })).toBeUndefined()
   expect(await typed.find({ type: 'Client', key: 'delivered' })).toBeDefined()
   await typed.unmount()
@@ -1528,11 +1566,11 @@ test('H1: a phone message that is the newest carries Delivered; the older typed 
     { uuid: 'phone', at: START + MINUTE },
   ])
 
-  const typed = await $.ui.mount({ ...PROMPT, requestId: 'typed', viewport: FULLSCREEN, surface: 'terminal' })
+  const typed = await mountRowOf($)({ ...PROMPT, requestId: 'typed', viewport: FULLSCREEN, surface: 'terminal' })
   expect(await typed.find({ type: 'Client', key: 'delivered' })).toBeUndefined()
   await typed.unmount()
 
-  const phone = await $.ui.mount({
+  const phone = await mountRowOf($)({
     ...PROMPT,
     requestId: 'phone',
     viewport: FULLSCREEN,
@@ -1545,7 +1583,7 @@ test('H1: a phone message that is the newest carries Delivered; the older typed 
 
 test('the ctrl+o view keeps the engine row for a prompt', async ($, on) => {
   engineDraws(on)
-  const prompt = await $.ui.mount({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, isExpanded: true } })
+  const prompt = await mountRowOf($)({ ...PROMPT, surface: 'terminal', props: { ...PROMPT.props, isExpanded: true } })
   expect(await prompt.find({ key: 'bubble-user' })).toBeUndefined()
   await prompt.unmount()
 })
@@ -1555,7 +1593,7 @@ test('L1: a summary row is a received bubble in clean mode; the engine row with 
   engineDraws(on)
   const SUMMARY = { ...REPLY.props, text: 'Both workers are running.', isSummary: true } as const
 
-  const clean = await $.ui.mount({ ...REPLY, surface: 'terminal', props: SUMMARY })
+  const clean = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: SUMMARY })
   const body = await clean.find({ key: 'bubble-assistant' })
   expect(body?.props.backgroundColor).toBe('userMessageBackground')
   expect((await clean.find({ type: 'Markdown' }))?.props.text).toBe('Both workers are running.')
@@ -1563,14 +1601,14 @@ test('L1: a summary row is a received bubble in clean mode; the engine row with 
   await clean.unmount()
 
   expect((await typed($, 'detail on')).text).toBe('Detail on.')
-  const detail = await $.ui.mount({ ...REPLY, surface: 'terminal', props: SUMMARY })
+  const detail = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: SUMMARY })
   expect(await isEngine(detail)).toBe(true)
   await detail.unmount()
 })
 
 test('L1: in round, full screen, a summary carries the same caps as any reply', async ($, on) => {
   engineDraws(on, { style: 'round' })
-  const ui = await $.ui.mount({
+  const ui = await mountRowOf($)({
     ...REPLY,
     requestId: 's1',
     viewport: FULLSCREEN,
@@ -1589,14 +1627,14 @@ test('/bubbles off passes everything through, the spinner, the hint and the hidd
   expect((await typed($, '')).text).toBe('Chat bubbles off in this chat. Detail off. Style block. Tail on.')
 
   for (const target of [PROMPT, REPLY, SPINNER, ...HIDDEN] as const) {
-    const ui = await $.ui.mount({ ...target, surface: 'terminal' })
+    const ui = await mountRowOf($)({ ...target, surface: 'terminal' })
     expect(await ui.find({ type: 'Box' })).toBeUndefined()
     expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
     await ui.unmount()
   }
 
   expect((await typed($, ' ON ')).text).toBe('Chat bubbles on in this chat.')
-  const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   expect((await ui.find({ key: 'bubble-user' }))?.props.backgroundColor).toBe('#0073EB')
   await ui.unmount()
 })
@@ -1632,7 +1670,7 @@ function chats(on: On, store: Record<string, unknown> = {}) {
 
 // Whether a typed prompt draws as a bubble (true) or the engine's row (false).
 async function bubbled($: Engine) {
-  const ui = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   const isBubble = (await ui.find({ key: 'bubble-user' })) !== undefined
   await ui.unmount()
 
@@ -1741,15 +1779,15 @@ test('a dark theme gives the dark fills and dots', async ($, on) => {
   themed(on, () => 'dark-daltonized')
   await startSession($)
 
-  const reply = await $.ui.mount({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi.' } })
+  const reply = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi.' } })
   expect(await fills(reply, 'assistant')).toEqual({ body: '#262626', top: '#262626', bottom: '#262626' })
   await reply.unmount()
 
-  const prompt = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const prompt = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   expect(await fills(prompt, 'user')).toEqual({ body: '#0073EB', top: '#0073EB', bottom: '#0073EB' })
   await prompt.unmount()
 
-  const typing = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  const typing = await mountRowOf($)({ ...SPINNER, surface: 'terminal' })
   expect(await fills(typing, 'typing')).toEqual({ body: '#262626', top: '#262626', bottom: '#262626' })
   expect((await typing.find({ type: 'Text', text: /•/, in: 'typing:Thinking' }))?.props.color).toBe('#AEAEB2')
   await typing.advance(300)
@@ -1762,15 +1800,15 @@ test('a light theme gives the light fills and dots', async ($, on) => {
   themed(on, () => 'light')
   await startSession($)
 
-  const reply = await $.ui.mount({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi.' } })
+  const reply = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi.' } })
   expect(await fills(reply, 'assistant')).toEqual({ body: '#E9E9E9', top: '#E9E9E9', bottom: '#E9E9E9' })
   await reply.unmount()
 
-  const prompt = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+  const prompt = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
   expect(await fills(prompt, 'user')).toEqual({ body: '#0073EB', top: '#0073EB', bottom: '#0073EB' })
   await prompt.unmount()
 
-  const typing = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  const typing = await mountRowOf($)({ ...SPINNER, surface: 'terminal' })
   expect((await typing.find({ type: 'Text', text: /•/, in: 'typing:Thinking' }))?.props.color).toBe('#8E8E93')
   await typing.advance(300)
   expect((await typing.find({ type: 'Text', text: /•/, in: 'typing:Thinking' }))?.props.color).toBe('#C7C7CC')
@@ -1785,11 +1823,11 @@ test('an unknown or missing theme keeps the fallback fills', async ($, on) => {
   for (const next of ['solarized', undefined]) {
     theme = next
     await startSession($)
-    const reply = await $.ui.mount({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi.' } })
+    const reply = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi.' } })
     expect((await fills(reply, 'assistant')).body).toBe('userMessageBackground')
     await reply.unmount()
 
-    const prompt = await $.ui.mount({ ...PROMPT, surface: 'terminal' })
+    const prompt = await mountRowOf($)({ ...PROMPT, surface: 'terminal' })
     expect((await fills(prompt, 'user')).body).toBe('#0073EB')
     await prompt.unmount()
   }
@@ -1814,7 +1852,7 @@ test('a change of theme in /config is picked up', async ($, on) => {
     origin: { kind: 'composer' },
   })
 
-  const reply = await $.ui.mount({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi.' } })
+  const reply = await mountRowOf($)({ ...REPLY, surface: 'terminal', props: { ...REPLY.props, text: 'Hi.' } })
   expect((await fills(reply, 'assistant')).body).toBe('#E9E9E9')
   await reply.unmount()
 })
@@ -1836,7 +1874,7 @@ function textOf(node: unknown): string {
 
 test('round: a one-line sent bubble with its tail', async ($, on) => {
   engineDraws(on, { style: 'round' })
-  const ui = await $.ui.mount({ ...PROMPT, requestId: 'm1', viewport: FULLSCREEN, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, requestId: 'm1', viewport: FULLSCREEN, surface: 'terminal' })
 
   // L = 11 ("hello there"), the bubble 15 wide plus the tail column.
   expect((await ui.find({ key: 'shape-user' }))?.props.width).toBe(16)
@@ -1860,19 +1898,19 @@ test('round: a one-line sent bubble with its tail', async ($, on) => {
 
 test('S3: a bubble whose text wraps or has a line break keeps its cap columns', async ($, on) => {
   engineDraws(on, { style: 'round' })
-  const broken = await $.ui.mount({ ...PROMPT, requestId: 'm2', viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, text: 'hello\nthere' } })
+  const broken = await mountRowOf($)({ ...PROMPT, requestId: 'm2', viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, text: 'hello\nthere' } })
   expect(await capColumnOf(broken, 'cap-left:m2')).toMatchObject({ first: g(0xe0b2, 0xe0b3), last: g(0xe0b4, 0xe0b5), fill: '#0073EB' })
   expect(await capColumnOf(broken, 'cap-right:m2')).toMatchObject({ first: g(0xe0bd, 0xe0bc), last: g(0xe0bf, 0xe0c8), fill: '#0073EB' })
   await broken.unmount()
 
-  const long = await $.ui.mount({ ...PROMPT, requestId: 'm3', viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, text: LONG } })
+  const long = await mountRowOf($)({ ...PROMPT, requestId: 'm3', viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, text: LONG } })
   expect((await capColumnOf(long, 'cap-left:m3'))?.type).toBe('Box')
   await long.unmount()
 })
 
 test('round: tail off draws the plain pill', async ($, on) => {
   engineDraws(on, { style: 'round', tail: false })
-  const ui = await $.ui.mount({ ...PROMPT, requestId: 'm1', viewport: FULLSCREEN, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, requestId: 'm1', viewport: FULLSCREEN, surface: 'terminal' })
 
   expect((await ui.find({ key: 'shape-user' }))?.props.width).toBe(15)
   const bottom = await ui.find({ type: 'Text', text: new RegExp(`^${g(0xe0b8)}`) })
@@ -1883,7 +1921,7 @@ test('round: tail off draws the plain pill', async ($, on) => {
 
 test('round: a received bubble with its tail on the left', async ($, on) => {
   engineDraws(on, { style: 'round' })
-  const ui = await $.ui.mount({ ...REPLY, requestId: 'r1', viewport: FULLSCREEN, surface: 'terminal', props: { ...REPLY.props, text: 'Hi there, friend.' } })
+  const ui = await mountRowOf($)({ ...REPLY, requestId: 'r1', viewport: FULLSCREEN, surface: 'terminal', props: { ...REPLY.props, text: 'Hi there, friend.' } })
 
   expect((await ui.find({ key: 'shape-assistant' }))?.props.width).toBe(22)
   expect((await ui.find({ key: 'bubble-assistant' }))?.props.width).toBe(17)
@@ -1895,7 +1933,7 @@ test('round: a received bubble with its tail on the left', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: new RegExp(`^${g(0xe0c1, 0xe0c0)}$`) }))?.props.color).toBe('userMessageBackground')
   await ui.unmount()
 
-  const two = await $.ui.mount({ ...REPLY, requestId: 'r2', viewport: FULLSCREEN, surface: 'terminal', props: { ...REPLY.props, text: 'Hi there,\nfriend.' } })
+  const two = await mountRowOf($)({ ...REPLY, requestId: 'r2', viewport: FULLSCREEN, surface: 'terminal', props: { ...REPLY.props, text: 'Hi there,\nfriend.' } })
   expect(await capColumnOf(two, 'cap-left:r2')).toMatchObject({ first: g(0xe0b2, 0xe0b3), last: g(0xe0cd, 0xe0b5), fill: 'userMessageBackground' })
   expect(await capColumnOf(two, 'cap-right:r2')).toMatchObject({ first: g(0xe0bd, 0xe0bc), last: g(0xe0bf, 0xe0be), fill: 'userMessageBackground' })
   await two.unmount()
@@ -1943,7 +1981,7 @@ async function capColumnOf(ui: { find: (q: { key?: string }) => Promise<unknown>
 // scroll and resize captures prove the rows.)
 test('B: cap columns are in the flow: first cap, growing fill, last cap; no Client, no absolute span', async ($, on) => {
   engineDraws(on, { style: 'round' })
-  const ui = await $.ui.mount({ ...PROMPT, requestId: 'm1', viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, text: 'hello\nthere' } })
+  const ui = await mountRowOf($)({ ...PROMPT, requestId: 'm1', viewport: FULLSCREEN, surface: 'terminal', props: { ...PROMPT.props, text: 'hello\nthere' } })
 
   expect(await ui.find({ type: 'Client', key: 'cap-left:m1' })).toBeUndefined()
   expect(await ui.find({ type: 'Client', key: 'cap-right:m1' })).toBeUndefined()
@@ -1970,7 +2008,7 @@ test('round: a received cap column with the tail, and one without', () => {
 
 test('round: the typing pill, its dots the font\'s dot, the bright one moving', async ($, on) => {
   engineDraws(on, { style: 'round' })
-  const ui = await $.ui.mount({ ...SPINNER, viewport: FULLSCREEN, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...SPINNER, viewport: FULLSCREEN, surface: 'terminal' })
 
   const top = await ui.find({ type: 'Text', text: new RegExp(`^${g(0xe0b0)}`) })
   expect(top?.text).toBe(g(0xe0b0, 0xe0b1) + rep(0xe0a4, 5) + g(0xe0bb, 0xe0ba))
@@ -2021,7 +2059,7 @@ test('K1: in round, full screen, the thread opens with the two avatar rows', asy
   mock.clock(on, { now: START + 5 * MINUTE })
   stamped(on, [{ uuid: 'p1', at: START }])
 
-  const ui = await $.ui.mount({ ...PROMPT, requestId: 'p1', viewport: FULLSCREEN, surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...PROMPT, requestId: 'p1', viewport: FULLSCREEN, surface: 'terminal' })
   const row1 = await ui.find({ type: 'Text', text: new RegExp(`^${g(0xe0ce)}`) })
   const row2 = await ui.find({ type: 'Text', text: new RegExp(`^${g(0xe0d2)}`) })
   expect(row1?.text).toBe(g(0xe0ce, 0xe0cf, 0xe0d0, 0xe0d1))
@@ -2041,7 +2079,7 @@ test('K1: block, pill and tail keep the ✻ header', async ($, on) => {
 
   for (const style of ['block', 'pill', 'tail']) {
     expect((await typed($, `style ${style}`)).text).toBe(`Style ${style}.`)
-    const ui = await $.ui.mount({ ...PROMPT, requestId: 'p1', viewport: FULLSCREEN, surface: 'terminal' })
+    const ui = await mountRowOf($)({ ...PROMPT, requestId: 'p1', viewport: FULLSCREEN, surface: 'terminal' })
     expect({ style, mark: (await ui.find({ type: 'Text', text: /^✻$/ }))?.props.color }).toEqual({ style, mark: '#D97757' })
     expect({ style, avatar: await ui.find({ type: 'Text', text: new RegExp(g(0xe0ce)) }) }).toEqual({ style, avatar: undefined })
     await ui.unmount()
@@ -2060,13 +2098,13 @@ test('K2: a saved round off full screen draws block everywhere', async ($, on) =
     [REPLY, 'assistant'],
     [SPINNER, 'typing'],
   ] as const) {
-    const ui = await $.ui.mount({ ...target, viewport: VIEWPORT, surface: 'terminal' })
+    const ui = await mountRowOf($)({ ...target, viewport: VIEWPORT, surface: 'terminal' })
     expect({ who, paddingY: (await ui.find({ key: `bubble-${who}` }))?.props.paddingY }).toEqual({ who, paddingY: 1 })
     expect({ who, glyph: await ui.find({ type: 'Text', text: roundGlyph }) }).toEqual({ who, glyph: undefined })
     await ui.unmount()
   }
 
-  const header = await $.ui.mount({ ...PROMPT, requestId: 'p1', viewport: VIEWPORT, surface: 'terminal' })
+  const header = await mountRowOf($)({ ...PROMPT, requestId: 'p1', viewport: VIEWPORT, surface: 'terminal' })
   expect((await header.find({ type: 'Text', text: /^✻$/ }))?.props.color).toBe('#D97757')
   await header.unmount()
 })
@@ -2078,7 +2116,7 @@ test('K2: the same saved round, full screen, draws round', async ($, on) => {
     [REPLY, 0xe0b0],
     [SPINNER, 0xe0b6],
   ] as const) {
-    const ui = await $.ui.mount({ ...target, viewport: FULLSCREEN, surface: 'terminal' })
+    const ui = await mountRowOf($)({ ...target, viewport: FULLSCREEN, surface: 'terminal' })
     expect(await ui.find({ type: 'Text', text: new RegExp(`^${g(glyph)}`) })).toBeDefined()
     await ui.unmount()
   }
@@ -2093,7 +2131,7 @@ test('K2: the same saved round, full screen, draws round', async ($, on) => {
 
 test('N3: the typing Client\'s key follows the turn word', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({ ...SPINNER, requestId: 'agent', surface: 'terminal' })
+  const ui = await mountRowOf($)({ ...SPINNER, requestId: 'agent', surface: 'terminal' })
   expect(await ui.find({ type: 'Client', key: 'typing:Thinking' })).toBeDefined()
   await ui.redraw({ ...SPINNER.props, word: 'Brewing' })
   expect(await ui.find({ type: 'Client', key: 'typing:Brewing' })).toBeDefined()
@@ -2156,7 +2194,7 @@ test('Q2: the same rows drawn in three orders give the same lines every time', a
   for (const order of orders) {
     const lines: Record<string, unknown> = {}
     for (const name of order) {
-      const ui = await $.ui.mount(rows[name] as never) as unknown as Ui & { redraw: () => Promise<void>; unmount: () => Promise<void> }
+      const ui = await mountRowOf($)(rows[name] as never) as unknown as Ui & { redraw: () => Promise<void>; unmount: () => Promise<void> }
       await ui.redraw()
       lines[name] = (await failLine(ui))?.text ?? null
       await ui.unmount()
@@ -2169,7 +2207,7 @@ test('Q2: the same rows drawn in three orders give the same lines every time', a
 
 test('Q2: a stopped call row draws its own line', async ($, on) => {
   engineDraws(on)
-  const ui = await $.ui.mount({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 's1', isInterrupted: true } })
+  const ui = await mountRowOf($)({ ...TOOL_USE, surface: 'terminal', props: { ...TOOL_USE.props, tool_use_id: 's1', isInterrupted: true } })
   for (let i = 0; i < 3; i += 1) {
     await ui.redraw()
     expect((await failLine(ui))?.text).toBe('Bash stopped')
@@ -2231,7 +2269,7 @@ test('T1: a collapsed band hands on no rows; expanded, a survey, detail on or mo
   const seen: number[] = []
   bandBeneath(on, seen)
   const draw = async (props: { isCollapsed?: boolean; hasSurvey?: boolean }) => {
-    const ui = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, ...props } } as never)
+    const ui = await mountRowOf($)({ ...BAND, surface: 'terminal', props: { ...BAND.props, ...props } } as never)
     await ui.unmount()
   }
 
@@ -2308,7 +2346,7 @@ function hintBeneath(on: On, seen: string[], failOn?: string) {
 }
 
 async function drawHint($: Engine, hint: string, surface: 'terminal' | 'desktop' = 'terminal') {
-  const ui = await $.ui.mount({ ...HINT, surface, props: { ...HINT.props, hint } } as never)
+  const ui = await mountRowOf($)({ ...HINT, surface, props: { ...HINT.props, hint } } as never)
   await ui.unmount()
 }
 
@@ -2354,7 +2392,7 @@ test('T20: a draw that throws on the rewritten line leaves the engine\'s own row
   // The stand-in beneath fails once, on the rewritten (empty) line.
   hintBeneath(on, seen, '')
 
-  const ui = await $.ui.mount({ ...HINT, surface: 'terminal' } as never)
+  const ui = await mountRowOf($)({ ...HINT, surface: 'terminal' } as never)
   expect(seen).toEqual(['threw on ""'])
   expect(await ui.find({ type: 'engine' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^hint: / })).toBeUndefined()
